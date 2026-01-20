@@ -3,7 +3,7 @@ package blockchain
 // This file is related but different to the blockchain/chain.go in pudding-grid on which it is based
 
 import (
-	"github.com/KitchenMishap/pudding-hoffman/derived"
+	"github.com/KitchenMishap/pudding-huffman/derived"
 	"github.com/KitchenMishap/pudding-shed/chainreadinterface"
 	"github.com/KitchenMishap/pudding-shed/chainstorage"
 )

@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"github.com/KitchenMishap/pudding-hoffman/jobs"
+	"github.com/KitchenMishap/pudding-huffman/jobs"
 )
 
 func main() {

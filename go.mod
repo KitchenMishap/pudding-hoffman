@@ -1,4 +1,4 @@
-module github.com/KitchenMishap/pudding-hoffman
+module github.com/KitchenMishap/pudding-huffman
 
 go 1.24.2
 

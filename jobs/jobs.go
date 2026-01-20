@@ -1,7 +1,7 @@
 package jobs
 
 import (
-	"github.com/KitchenMishap/pudding-hoffman/blockchain"
+	"github.com/KitchenMishap/pudding-huffman/blockchain"
 )
 
 func GatherStatistics(folder string) error {
