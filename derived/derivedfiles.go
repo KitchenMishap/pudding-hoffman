@@ -29,3 +29,5 @@ func NewDerivedFiles(folder string) (*DerivedFiles, error) {
 func (df *DerivedFiles) OpenReadOnly() error {
 	return nil
 }
+
+func (df *DerivedFiles) PrivilegedFiles() chainstorage.IPrivilegedFiles { return df.privilegedFiles }
