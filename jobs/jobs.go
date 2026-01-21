@@ -227,7 +227,7 @@ func GatherStatistics(folder string) error {
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression **==")
 	const blocksPerEpoch = 144 * 7 // Roughly a week
-	result, amountsEachEpoch := compress.SimulateCompression(amounts, blocksPerEpoch, blockToTxo, amountCodes, mantissaCodes, exponentCodes)
+	result, amountsEachEpoch, magFreqs := compress.SimulateCompression(amounts, blocksPerEpoch, blockToTxo, amountCodes, mantissaCodes, exponentCodes)
 
 	println("TotalBits: ", result.TotalBits)
 	println("Celebrity hits: ", result.CelebrityHits)
@@ -270,7 +270,17 @@ func GatherStatistics(folder string) error {
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression with kmeans **==")
 
-	result = compress.SimulateCompressionWithKMeans(amounts, blocksPerEpoch, blockToTxo, amountCodes, mantissaCodes, exponentCodes, residualCodes, epochToPhasePeaks)
+	println("Huffman tree for literal magnitudes...")
+	magnitudesMap := make(map[int64]int64)
+	for mag := int64(0); mag <= 64; mag++ {
+		freq := magFreqs[mag]
+		magnitudesMap[mag] = freq
+	}
+	huffMagnitudeRoot := huffman.BuildHuffmanTree(magnitudesMap)
+	magnitudeCodes := make(map[int64]huffman.BitCode)
+	huffman.GenerateBitCodes(huffMagnitudeRoot, 0, 0, magnitudeCodes)
+
+	result = compress.SimulateCompressionWithKMeans(amounts, blocksPerEpoch, blockToTxo, amountCodes, mantissaCodes, exponentCodes, residualCodes, magnitudeCodes, epochToPhasePeaks)
 
 	println("TotalBits: ", result.TotalBits)
 	println("Celebrity hits: ", result.CelebrityHits)
