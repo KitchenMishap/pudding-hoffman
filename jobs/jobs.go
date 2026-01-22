@@ -18,10 +18,8 @@ import (
 
 type Histograms struct {
 	// Sharding the histogram maps reduces lock contention on the maps
-	shardsAmount   [256]map[int64]int64
-	shardsMantissa [256]map[int64]int64
-	shardsExponent [256]map[int64]int64
-	mu             [256]sync.Mutex
+	shardsAmount [256]map[int64]int64
+	mu           [256]sync.Mutex
 }
 
 func (h *Histograms) Add(amount int64) {
@@ -29,13 +27,8 @@ func (h *Histograms) Add(amount int64) {
 	h.mu[idx].Lock()
 	if h.shardsAmount[idx] == nil {
 		h.shardsAmount[idx] = make(map[int64]int64, 100000)
-		h.shardsMantissa[idx] = make(map[int64]int64, 100000)
-		h.shardsExponent[idx] = make(map[int64]int64, 100000)
 	}
-	ff := compress.NewForensicFloat(amount)
 	h.shardsAmount[idx][amount]++
-	h.shardsMantissa[idx][ff.Mantissa]++
-	h.shardsExponent[idx][ff.Exponent]++
 	h.mu[idx].Unlock()
 }
 
@@ -44,35 +37,23 @@ type Entry struct {
 	Count int64
 }
 
-func (h *Histograms) MergeAndSort() (amountsMap map[int64]int64, mantissasMap map[int64]int64, exponentsMap map[int64]int64) {
-	amountMap := make(map[int64]int64)
-	mantissaMap := make(map[int64]int64)
-	exponentMap := make(map[int64]int64)
+func (h *Histograms) MergeAndSort() (shardsAmount map[int64]int64) {
+	amountsMap := make(map[int64]int64)
 
 	// Merge
 	for i := 0; i < 256; i++ {
 		h.mu[i].Lock()
 		for amount, count := range h.shardsAmount[i] {
-			amountMap[amount] += count
-		}
-		for mantissa, count := range h.shardsMantissa[i] {
-			mantissaMap[mantissa] += count
-		}
-		for exponent, count := range h.shardsExponent[i] {
-			exponentMap[exponent] += count
+			amountsMap[amount] += count
 		}
 		h.mu[i].Unlock()
 	}
 
 	println("Truncating...")
-	amountTruncated := TruncateMapWithEscapeCode(amountMap, 10000, 0.99, -1)
-	println("Amount: truncated to ", len(amountTruncated))
-	mantissaTruncated := TruncateMapWithEscapeCode(mantissaMap, 10000, 0.99, -1)
-	println("mantissa: truncated to ", len(mantissaTruncated))
-	exponentTruncated := TruncateMapWithEscapeCode(exponentMap, 16, 1.0, -1)
-	println("exponent: truncated to ", len(exponentTruncated))
+	amountTruncated := TruncateMapWithEscapeCode(amountsMap, 10000, 0.99, -1)
+	println("Amount: truncated to (celebs)", len(amountTruncated))
 
-	return amountTruncated, mantissaTruncated, exponentTruncated
+	return amountTruncated
 }
 
 func TruncateMapWithEscapeCode(all map[int64]int64, maxCodes int, captureCoverage float64, escapeCode int64) map[int64]int64 {
@@ -104,6 +85,13 @@ func TruncateMapWithEscapeCode(all map[int64]int64, maxCodes int, captureCoverag
 	some[escapeCode] = total - soFar
 	return some
 }
+
+// Numbers up to 21 million btc (in sats) are unsafe to use as an escape code, because a txo amount could match.
+// So we go to 22 million (times 100,000,000 sats) and make it -ve for good measure
+const ESCAPE_VALUE = -2200000000000000
+
+// The maximum number of zeroes at the end of a base 10 number. 15 is about enough for max supply of sats.
+const MAX_BASE_10_EXP = 20
 
 func GatherStatistics(folder string) error {
 	var startTime = time.Now()
@@ -208,32 +196,23 @@ func GatherStatistics(folder string) error {
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Merge and sort **==")
-	amountsMap, mantissasMap, exponentsMap := hist.MergeAndSort()
+	celebsMap := hist.MergeAndSort()
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Huffman stuff **==")
 
-	println("Huffman tree for amounts...")
-	huffAmountRoot := huffman.BuildHuffmanTree(amountsMap)
-	amountCodes := make(map[int64]huffman.BitCode)
-	huffman.GenerateBitCodes(huffAmountRoot, 0, 0, amountCodes)
-	println("Huffman tree for mantissas...")
-	huffMantissaRoot := huffman.BuildHuffmanTree(mantissasMap)
-	mantissaCodes := make(map[int64]huffman.BitCode)
-	huffman.GenerateBitCodes(huffMantissaRoot, 0, 0, mantissaCodes)
-	println("Huffman tree for exponents...")
-	huffExponentRoot := huffman.BuildHuffmanTree(exponentsMap)
-	exponentCodes := make(map[int64]huffman.BitCode)
-	huffman.GenerateBitCodes(huffExponentRoot, 0, 0, exponentCodes)
+	println("Huffman tree for celebrity amounts...")
+	huffCelebRoot := huffman.BuildHuffmanTree(celebsMap)
+	celebCodes := make(map[int64]huffman.BitCode)
+	huffman.GenerateBitCodes(huffCelebRoot, 0, 0, celebCodes)
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression **==")
 	const blocksPerEpoch = 144 * 7 // Roughly a week
-	result, amountsEachEpoch, magFreqs := compress.ParallelSimulateCompression(amounts, blocksPerEpoch, blockToTxo, amountCodes, mantissaCodes, exponentCodes)
+	result, amountsEachEpoch, magFreqs, expFreqs := compress.ParallelAmountStatistics(amounts, blocksPerEpoch, blockToTxo, celebCodes, MAX_BASE_10_EXP)
 
 	println("TotalBits: ", result.TotalBits)
 	println("Celebrity hits: ", result.CelebrityHits)
-	println("Scientific hits: ", result.ScientificHits)
 	println("Literal hits: ", result.LiteralHits)
 
 	elapsed = time.Since(startTime)
@@ -300,8 +279,7 @@ func GatherStatistics(folder string) error {
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** More Huffman stuff **==")
 
 	println("Huffman tree for clockPhase residuals")
-	esc := int64(2100000000000000) // As we can't use -1
-	residualTruncated := TruncateMapWithEscapeCode(residualsMap, 10000, 0.99, esc)
+	residualTruncated := TruncateMapWithEscapeCode(residualsMap, 100000, 0.99, ESCAPE_VALUE)
 	println("Huffman tree for residuals...")
 	huffResidualRoot := huffman.BuildHuffmanTree(residualTruncated)
 	residualCodes := make(map[int64]huffman.BitCode)
@@ -320,11 +298,20 @@ func GatherStatistics(folder string) error {
 	magnitudeCodes := make(map[int64]huffman.BitCode)
 	huffman.GenerateBitCodes(huffMagnitudeRoot, 0, 0, magnitudeCodes)
 
-	result, peakStrengths := compress.ParallelSimulateCompressionWithKMeans(amounts, blocksPerEpoch, blockToTxo, amountCodes, mantissaCodes, exponentCodes, residualCodes, magnitudeCodes, epochToPhasePeaks)
+	println("Huffman tree for base 10 exps...")
+	expsMap := make(map[int64]int64)
+	for exp := int64(0); exp < MAX_BASE_10_EXP; exp++ {
+		freq := expFreqs[exp]
+		expsMap[exp] = freq
+	}
+	huffExpRoot := huffman.BuildHuffmanTree(expsMap)
+	expCodes := make(map[int64]huffman.BitCode)
+	huffman.GenerateBitCodes(huffExpRoot, 0, 0, expCodes)
+
+	result, peakStrengths := compress.ParallelSimulateCompressionWithKMeans(amounts, blocksPerEpoch, blockToTxo, celebCodes, expCodes, residualCodes, magnitudeCodes, epochToPhasePeaks, ESCAPE_VALUE)
 
 	println("TotalBits: ", result.TotalBits)
 	println("Celebrity hits: ", result.CelebrityHits)
-	println("Scientific hits: ", result.ScientificHits)
 	println("KMeans hits: ", result.KMeansHits)
 	println("Literal hits: ", result.LiteralHits)
 
