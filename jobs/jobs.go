@@ -243,20 +243,58 @@ func GatherStatistics(folder string) error {
 	epochToPhasePeaks := kmeans.ParallelKMeans(amountsEachEpoch, epochs)
 
 	elapsed = time.Since(startTime)
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Build residuals map (serial) **==")
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Build residuals map (now parallel) **==")
+
+	var lock sync.Mutex
 	residualsMap := make(map[int64]int64)
-	block := int64(0)
-	epochID := int64(0)
-	for txo, amount := range amounts {
-		if block+1 < blocks && txo >= int(blockToTxo[block+1]) {
-			block++
-			epochID = block / blocksPerEpoch
-		}
-		if epochToPhasePeaks[epochID] != nil {
-			_, _, r := kmeans.ExpPeakResidual(amount, epochToPhasePeaks[epochID])
-			residualsMap[r]++
-		}
+
+	// Define the worker pool
+	numWorkerers := 40
+	jobs := make(chan int64, 100) // Channel of block indices
+	var wgwg sync.WaitGroup
+
+	// The "Map" phase: Workers with local buffers
+	for w := 0; w < numWorkerers; w++ {
+		wgwg.Add(1)
+		go func() {
+			defer wgwg.Done()
+
+			// Private local buffers to avoid contention
+			localResiduals := make(map[int64]int64)
+
+			for blockIdx := range jobs {
+				// process blocks, calculate peaks
+				epochID := blockIdx / blocksPerEpoch
+				firstTxo := blockToTxo[blockIdx]
+				lastTxo := int64(len(amounts)) // Fallback
+				if int64(blockIdx+1) < blocks {
+					lastTxo = blockToTxo[blockIdx+1]
+				}
+				if epochToPhasePeaks[epochID] != nil {
+					for txo := firstTxo; txo < lastTxo; txo++ {
+						localAmount := amounts[txo]
+						_, _, r := kmeans.ExpPeakResidual(localAmount, epochToPhasePeaks[epochID])
+						// Record hits locally
+						localResiduals[r]++
+					}
+				}
+			}
+
+			// The reduce phase
+			lock.Lock()
+			for k, v := range localResiduals {
+				residualsMap[k] += v
+			}
+			lock.Unlock()
+		}()
 	}
+
+	// Feed the beast
+	for i := int64(0); i < blocks; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wgwg.Wait()
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** More Huffman stuff **==")
@@ -332,7 +370,7 @@ func exportOracleCSV(filename string, epochToPhasePeaks [][]float64, peakStrengt
 		})
 
 		for peakPriority := 0; peakPriority < 7; peakPriority++ {
-			row = append(row, fmt.Sprintf("%f", results[peakPriority]), fmt.Sprintf("%d", results[peakPriority]))
+			row = append(row, fmt.Sprintf("%.0f", results[peakPriority].Value), fmt.Sprintf("%d", results[peakPriority].Strength))
 		}
 		w.Write(row)
 	}
