@@ -11,7 +11,142 @@ import (
 
 const USE_125 = false
 
-func FindEpochPeaks(amounts []int64, k int) []float64 {
+func FindEpochPeaksMain(amounts []int64) []float64 {
+	// 1. Map all mantissas to the 0.0 to 1.0 "Clock face"
+	phases := make([]float64, len(amounts))
+	for i, v := range amounts {
+		// log10(v) % 1 gives the position on the clock
+		_, phases[i] = math.Modf(math.Log10(float64(v)))
+		if phases[i] < 0.0 {
+			phases[i] += 1.0
+		}
+	}
+
+	onePeak := findEpochPeaks(amounts, 1)
+	if len(onePeak) == 0 {
+		return nil
+	}
+	fundamentalPhase := onePeak[0]
+	betterFundamental, _ := FindBestAnchor(phases, fundamentalPhase)
+
+	result := []float64{}
+	// fundamental times logs representing 1.0, 1.1, 1.2, ..., 9.99
+	for i := float64(1.00); i < 10.00; i += 0.1 {
+		result = append(result, math.Mod(betterFundamental+math.Log10(i), 1))
+	}
+	return result
+}
+
+func FindBestAnchor(phases []float64, initialPeak float64) (bestAnchor float64, score float64) {
+	spokes := []float64{0.0, 0.30103, 0.69897} // log10 of 1, 2, 5
+
+	bestScore := math.MaxFloat64
+	var absoluteBest float64
+
+	for _, shift := range spokes {
+		// Hypothesis: What if the initial peak is actually the '1', '2', or '5'?
+		// We shift the anchor so the template aligns the initial peak with that spoke.
+		testAnchor := math.Mod(initialPeak-shift+1.0, 1.0)
+
+		refined, currentBadness := refineAndScore(phases, testAnchor, spokes)
+
+		if currentBadness < bestScore {
+			bestScore = currentBadness
+			absoluteBest = refined
+		}
+	}
+	return absoluteBest, bestScore
+}
+
+func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (float64, float64) {
+	const guffThreshold = 0.05
+	const iterations = 5
+	currentAnchor := startAnchor
+
+	for iter := 0; iter < iterations; iter++ {
+		var totalTorque float64
+		var validHits float64
+
+		for _, p := range phases {
+			bestError := 1.0 // Initialize with max possible
+
+			for _, spokeOffset := range spokes {
+				// Calculate where this specific spoke is on the clock
+				targetPos := math.Mod(currentAnchor+spokeOffset, 1.0)
+
+				// We need SIGNED distance: how far and in which direction?
+				// Result should be between -0.5 and 0.5
+				diff := p - targetPos
+				if diff > 0.5 {
+					diff -= 1.0
+				}
+				if diff < -0.5 {
+					diff += 1.0
+				}
+
+				if math.Abs(diff) < math.Abs(bestError) {
+					bestError = diff
+				}
+			}
+
+			// Only let "near misses" pull the template.
+			// This ignores the 'guff' between the 2 and 5 spokes.
+			if math.Abs(bestError) < guffThreshold {
+				totalTorque += bestError
+				validHits++
+			}
+		}
+
+		if validHits > 0 {
+			// Adjust the anchor by the average torque (the M-step)
+			currentAnchor = math.Mod(currentAnchor+(totalTorque/validHits)+1.0, 1.0)
+		}
+	}
+
+	// Final Pass: Calculate "Badness"
+	var totalSqError float64
+	var hits float64
+	for _, p := range phases {
+		bestError := 1.0 // Initialize with max possible
+		for _, spokeOffset := range spokes {
+			// Calculate where this specific spoke is on the clock
+			targetPos := math.Mod(currentAnchor+spokeOffset, 1.0)
+
+			// We need SIGNED distance: how far and in which direction?
+			// Result should be between -0.5 and 0.5
+			diff := p - targetPos
+			if diff > 0.5 {
+				diff -= 1.0
+			}
+			if diff < -0.5 {
+				diff += 1.0
+			}
+
+			if math.Abs(diff) < math.Abs(bestError) {
+				bestError = diff
+			}
+		}
+		err := bestError
+
+		if err < guffThreshold {
+			totalSqError += (err * err)
+			hits++
+		}
+	}
+
+	// If it captures very few points, it's a "bad" fit regardless of tightness
+	if hits == 0 {
+		return startAnchor, math.MaxFloat64
+	}
+
+	// Badness = Variance / CaptureRate
+	captureRate := hits / float64(len(phases))
+	badness := (totalSqError / hits) / captureRate
+
+	return currentAnchor, badness
+}
+
+func findEpochPeaks(amounts []int64, k int) []float64 {
 
 	if USE_125 {
 		return findEpochPeaks125(amounts, k)
@@ -306,6 +441,8 @@ func expPeakResidual125(amount int64, logCentroids []float64) (exp int, peak int
 	return
 }
 
+const MIN_AMOUNTS_PER_EPOCH_FOR_ANALYSIS = 100
+
 func ParallelKMeans(amountsEachEpoch [][]int64, epochs int64) [][]float64 {
 	epochToPhasePeaks := make([][]float64, epochs)
 	var wg sync.WaitGroup
@@ -321,11 +458,11 @@ func ParallelKMeans(amountsEachEpoch [][]int64, epochs int64) [][]float64 {
 			sem <- struct{}{}        // Acquire token
 			defer func() { <-sem }() // Release token
 
-			if len(amountsEachEpoch[epochID]) < 7 {
+			if len(amountsEachEpoch[epochID]) < MIN_AMOUNTS_PER_EPOCH_FOR_ANALYSIS {
 				epochToPhasePeaks[epochID] = nil
 			} else {
 				// This is the heavy lifting
-				epochToPhasePeaks[epochID] = FindEpochPeaks(amountsEachEpoch[epochID], 7)
+				epochToPhasePeaks[epochID] = FindEpochPeaksMain(amountsEachEpoch[epochID])
 			}
 
 			// Report progress on completion

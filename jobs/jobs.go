@@ -318,8 +318,7 @@ func GatherStatistics(folder string) error {
 	epochs := blocks/blocksPerEpoch + 1 // +1 for the partial epoch at the end
 	epochToPhasePeaks := kmeans.ParallelKMeans(amountsEachEpoch, epochs)
 	for eID := 0; eID < int(numEpochs); eID++ {
-		// Sort the 7 peaks for this epoch so Peak 0 is always the smallest phase
-		// and Peak 6 is always the largest.
+		// Sort the peaks for this epoch so Peak 0 is always the smallest phase
 		sort.Float64s(epochToPhasePeaks[eID])
 	}
 
@@ -428,13 +427,13 @@ func GetSensibleMaxCodes(exponent int) int {
 	return needed
 }
 
-func exportOracleCSV(filename string, epochToPhasePeaks [][]float64, peakStrengths [][7]int64) {
+func exportOracleCSV(filename string, epochToPhasePeaks [][]float64, peakStrengths [][compress.CSV_COLUMNS]int64) {
 	f, _ := os.Create(filename)
 	defer f.Close()
 	w := csv.NewWriter(f)
 
 	header := []string{"Epoch"}
-	for i := 0; i < 7; i++ {
+	for i := 0; i < compress.CSV_COLUMNS; i++ {
 		header = append(header, fmt.Sprintf("P%d_Value", i), fmt.Sprintf("P%d_Strength", i))
 	}
 	w.Write(header)
@@ -445,8 +444,8 @@ func exportOracleCSV(filename string, epochToPhasePeaks [][]float64, peakStrengt
 		}
 		row := []string{fmt.Sprintf("%d", epochID)}
 
-		results := make([]PeakResult, 7)
-		for peakIdx := range peaks {
+		results := make([]PeakResult, compress.CSV_COLUMNS)
+		for peakIdx := 0; peakIdx < compress.CSV_COLUMNS; peakIdx++ {
 			results[peakIdx] = PeakResult{
 				Value:    peaks[peakIdx],
 				Strength: peakStrengths[epochID][peakIdx],
@@ -456,7 +455,7 @@ func exportOracleCSV(filename string, epochToPhasePeaks [][]float64, peakStrengt
 			return results[i].Strength > results[j].Strength
 		})
 
-		for peakPriority := 0; peakPriority < 7; peakPriority++ {
+		for peakPriority := 0; peakPriority < compress.CSV_COLUMNS; peakPriority++ {
 			row = append(row, fmt.Sprintf("%.4f", results[peakPriority].Value), fmt.Sprintf("%d", results[peakPriority].Strength))
 		}
 		w.Write(row)

@@ -141,7 +141,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	max_base_10_exp int) ([20]map[int64]int64, // First result: outer array index is the exponent (number of decimal zeros). Inner map is freq for each possible residual
 	map[int64]int64) { // Second result: frequencies of combined peak/harmonic index
 
-	fmt.Printf("Stage 1.5, gather frequencies of residuals by exp magnitude")
+	fmt.Printf("Stage 1.5, gather frequencies of residuals by exp magnitude\n")
 
 	blocks := len(blockToTxo)
 
@@ -175,7 +175,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 			local := workerResult{}
 			local.localCombinedFreq = make(map[int64]int64)
 			for i := 0; i < max_base_10_exp; i++ {
-				local.localResidualsByExp[i] = make(map[int64]int64, 1000)
+				local.localResidualsByExp[i] = make(map[int64]int64, MAX_PHASE_PEAKS)
 			}
 
 			for blockIdx := range jobs {
@@ -248,6 +248,9 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	return finalResidualsByExp, finalCombinedFreqs
 }
 
+const MAX_PHASE_PEAKS = 1000
+const CSV_COLUMNS = 4
+
 func ParallelSimulateCompressionWithKMeans(amounts []int64,
 	blocksPerEpoch int,
 	blockToTxo []int64,
@@ -256,7 +259,7 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 	residualCodesByExp []map[int64]huffman.BitCode,
 	magnitudeCodes map[int64]huffman.BitCode,
 	combinedCodes map[int64]huffman.BitCode,
-	epochToPhasePeaks [][]float64) (CompressionStats, [][7]int64) {
+	epochToPhasePeaks [][]float64) (CompressionStats, [][CSV_COLUMNS]int64) {
 
 	blocks := len(blockToTxo)
 	epochs := blocks/blocksPerEpoch + 1
@@ -269,7 +272,7 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 	jobs := make(chan int, 100)
 	type workerResult struct {
 		stats         CompressionStats
-		peakStrengths [][7]int64
+		peakStrengths [][CSV_COLUMNS]int64
 	}
 	resultsChan := make(chan workerResult, numWorkers)
 	var wg sync.WaitGroup
@@ -279,7 +282,7 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 		go func() {
 			defer wg.Done()
 			local := workerResult{
-				peakStrengths: make([][7]int64, epochs),
+				peakStrengths: make([][CSV_COLUMNS]int64, epochs),
 			}
 
 			for blockIdx := range jobs {
@@ -313,7 +316,9 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 							// Now we have a huffman code for the combination of peak index and harmonic index.
 							// This is the initial cost...
 							ghostCost = combinedCodes[int64(3*peakIdx+harmonic)].Length
-							local.peakStrengths[epochID][peakIdx]++ // Yes this IS supposed to be here. It's for oracle price prediction
+							if peakIdx < CSV_COLUMNS {
+								local.peakStrengths[epochID][peakIdx]++ // Yes this IS supposed to be here. It's for oracle price prediction
+							}
 							if eCode, ok := expCodes[int64(e)]; ok {
 								ghostCost += eCode.Length // Secondly there are some bits to encode the number of decimal points (exp)
 							} else {
@@ -382,7 +387,7 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 
 	// Final Reduction
 	globalStats := CompressionStats{}
-	globalStrengths := make([][7]int64, epochs)
+	globalStrengths := make([][CSV_COLUMNS]int64, epochs)
 	for res := range resultsChan {
 		globalStats.TotalBits += res.stats.TotalBits
 		globalStats.CelebrityHits += res.stats.CelebrityHits
@@ -390,7 +395,7 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 		globalStats.LiteralHits += res.stats.LiteralHits
 
 		for e := 0; e < epochs; e++ {
-			for p := 0; p < 7; p++ {
+			for p := 0; p < CSV_COLUMNS; p++ {
 				globalStrengths[e][p] += res.peakStrengths[e][p]
 			}
 		}
