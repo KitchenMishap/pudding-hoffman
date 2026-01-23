@@ -26,7 +26,7 @@ func ParallelAmountStatistics(amounts []int64,
 	blocks := len(blockToTxo)
 	epochs := blocks/blocksPerEpoch + 1
 
-	fmt.Printf("Parallel phase...")
+	fmt.Printf("Parallel phase...\n")
 
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 4 {
@@ -105,7 +105,7 @@ func ParallelAmountStatistics(amounts []int64,
 	wg.Wait()
 	close(resultsChan)
 
-	fmt.Printf("Reduce phase (serial)...")
+	fmt.Printf("Reduce phase (serial)...\n")
 	// --- REDUCE PHASE ---
 	finalStats := CompressionStats{}
 	finalMags := make([]int64, 65)
@@ -138,13 +138,14 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	blockToTxo []int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	epochToPhasePeaks [][]float64,
-	max_base_10_exp int) [20]map[int64]int64 { // The result: outer array index is the exponent (number of decimal zeros). Inner map is freq for each possible residual
+	max_base_10_exp int) ([20]map[int64]int64, // First result: outer array index is the exponent (number of decimal zeros). Inner map is freq for each possible residual
+	map[int64]int64) { // Second result: frequencies of combined peak/harmonic index
 
 	fmt.Printf("Stage 1.5, gather frequencies of residuals by exp magnitude")
 
 	blocks := len(blockToTxo)
 
-	fmt.Printf("Parallel phase...")
+	fmt.Printf("Parallel phase...\n")
 
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 4 {
@@ -159,6 +160,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	type workerResult struct {
 		// A separate map for each exponent level
 		localResidualsByExp [20]map[int64]int64
+		localCombinedFreq   map[int64]int64
 	}
 	resultsChan := make(chan workerResult, numWorkers)
 	var wg sync.WaitGroup
@@ -171,6 +173,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 				panic("You changed a constant!")
 			}
 			local := workerResult{}
+			local.localCombinedFreq = make(map[int64]int64)
 			for i := 0; i < max_base_10_exp; i++ {
 				local.localResidualsByExp[i] = make(map[int64]int64, 1000)
 			}
@@ -197,7 +200,9 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 						continue
 					}
 
-					e, _, r := kmeans.ExpPeakResidual(amount, epochToPhasePeaks[epochID])
+					e, peak, harmonic, r := kmeans.ExpPeakResidual(amount, epochToPhasePeaks[epochID])
+					combined := peak*3 + harmonic
+					local.localCombinedFreq[int64(combined)]++
 
 					if e >= 0 && e < max_base_10_exp {
 						local.localResidualsByExp[e][r]++
@@ -216,7 +221,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	wg.Wait()
 	close(resultsChan)
 
-	fmt.Printf("Reduce phase (serial)...")
+	fmt.Printf("Reduce phase (serial)...\n")
 	if max_base_10_exp != 20 {
 		panic("You changed a constant!")
 	}
@@ -224,6 +229,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	for i := 0; i < max_base_10_exp; i++ {
 		finalResidualsByExp[i] = make(map[int64]int64)
 	}
+	finalCombinedFreqs := make(map[int64]int64)
 
 	for res := range resultsChan {
 		// Merge the 20 exponent maps from this worker
@@ -232,9 +238,14 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 				finalResidualsByExp[e][r] += count
 			}
 		}
+		for combined := 0; combined < 24; combined++ {
+			if freq, ok := res.localCombinedFreq[int64(combined)]; ok {
+				finalCombinedFreqs[int64(combined)] += freq
+			}
+		}
 	}
 
-	return finalResidualsByExp
+	return finalResidualsByExp, finalCombinedFreqs
 }
 
 func ParallelSimulateCompressionWithKMeans(amounts []int64,
@@ -244,6 +255,7 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 	expCodes map[int64]huffman.BitCode,
 	residualCodesByExp []map[int64]huffman.BitCode,
 	magnitudeCodes map[int64]huffman.BitCode,
+	combinedCodes map[int64]huffman.BitCode,
 	epochToPhasePeaks [][]float64) (CompressionStats, [][7]int64) {
 
 	blocks := len(blockToTxo)
@@ -294,9 +306,13 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 					ghostCost := math.MaxInt
 					// Amount 0 will trigger a log10(0) and things will go wrong. But we know amount 0 will be treated as a celeb or literal so we're not interested in the "ghost" cost of a zero
 					if amount > 0 && epochToPhasePeaks[epochID] != nil && len(epochToPhasePeaks[epochID]) > 0 {
-						e, peakIdx, r := kmeans.ExpPeakResidual(amount, epochToPhasePeaks[epochID])
+						e, peakIdx, harmonic, r := kmeans.ExpPeakResidual(amount, epochToPhasePeaks[epochID])
 						if rCode, ok := residualCodesByExp[e][r]; ok {
-							ghostCost = 3                           // Firstly there is a 3 bit cost to select which of the 7 stored peaks (for this epoch) we're near
+							//ghostCost = 3                           // Firstly there is a 3 bit cost to select which of the 7 stored peaks (for this epoch) we're near
+							//ghostCost += 2                          // And some bits to store the harmonic
+							// Now we have a huffman code for the combination of peak index and harmonic index.
+							// This is the initial cost...
+							ghostCost = combinedCodes[int64(3*peakIdx+harmonic)].Length
 							local.peakStrengths[epochID][peakIdx]++ // Yes this IS supposed to be here. It's for oracle price prediction
 							if eCode, ok := expCodes[int64(e)]; ok {
 								ghostCost += eCode.Length // Secondly there are some bits to encode the number of decimal points (exp)

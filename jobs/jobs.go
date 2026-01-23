@@ -51,13 +51,30 @@ func (h *Histograms) MergeAndSort() (shardsAmount map[int64]int64) {
 	}
 
 	println("Truncating...")
-	amountTruncated := TruncateMapWithEscapeCode(amountsMap, 100000, 0.99, -1)
+	amountTruncated, reason := TruncateMapWithEscapeCode(amountsMap, 100000, 0.99, -1)
+	if reason == 0 {
+		println(REASON_STRING_0)
+	}
+	if reason == 1 {
+		println(REASON_STRING_1)
+	}
+	if reason == 2 {
+		println(REASON_STRING_2)
+	}
 	println("Amount: truncated to (celebs)", len(amountTruncated))
 
 	return amountTruncated
 }
 
-func TruncateMapWithEscapeCode(all map[int64]int64, maxCodes int, captureCoverage float64, escapeCode int64) map[int64]int64 {
+const REASON_STRING_0 = "NoReason"
+const REASON_STRING_1 = "MaxCodesReached"
+const REASON_STRING_2 = "CoverageReached"
+const NO_REASON_FLAG = 0
+const MAXCODES_REACHED_FLAG = 1
+const COVERAGE_REACHED_FLAG = 2
+
+func TruncateMapWithEscapeCode(all map[int64]int64, maxCodes int, captureCoverage float64, escapeCode int64) (map[int64]int64, int) {
+	reasonFlag := NO_REASON_FLAG
 	entries := make([]Entry, 0, len(all))
 	total := int64(0)
 	for k, v := range all {
@@ -75,16 +92,16 @@ func TruncateMapWithEscapeCode(all map[int64]int64, maxCodes int, captureCoverag
 		soFar += entries[entry].Count
 		some[entries[entry].Value] = entries[entry].Count
 		if entry+1 >= maxCodes {
-			println("maxCodes reached")
+			reasonFlag = MAXCODES_REACHED_FLAG
 			break // maxCodes reached
 		}
 		if float64(soFar)/float64(total) >= captureCoverage {
-			println("capture coverage reached")
+			reasonFlag = COVERAGE_REACHED_FLAG
 			break // captureCoverage ratio met
 		}
 	}
 	some[escapeCode] = total - soFar
-	return some
+	return some, reasonFlag
 }
 
 // Numbers up to 21 million btc (in sats) are unsafe to use as an escape code, because a txo amount could match.
@@ -180,7 +197,7 @@ func GatherStatistics(folder string) error {
 
 	// Here we use the "worker pool" ("feed the  beast") pattern
 	// 1. Create a channel to hold the epochIDs
-	epochChan := make(chan int, numEpochs)
+	epochChan := make(chan int, 0)
 
 	// 2. Create a slice to store the results (one map per epoch)
 	epochToCelebsMap := make([]map[int64]int64, numEpochs)
@@ -223,6 +240,9 @@ func GatherStatistics(folder string) error {
 	}
 	// 4. Feed the Channel (The Producer)
 	for eID := 0; eID < int(numEpochs); eID++ {
+		if eID%100 == 0 {
+			fmt.Println("Feeding epoch: ", eID)
+		}
 		epochChan <- eID
 	}
 	close(epochChan) // Crucial: Workers stop when the channel is empty and closed
@@ -231,21 +251,59 @@ func GatherStatistics(folder string) error {
 	// END Stuff suggested by Gemini
 
 	elapsed = time.Since(startTime)
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Huffman per Epoch **==\n")
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Huffman per Epoch (now parallel) **==\n")
+
+	lock := sync.Mutex{}
+	reasonHist := make(map[int]int64)
 
 	// Build the Forest of Trees
+	// 1. Create the results slice
 	epochToCelebCodes := make([]map[int64]huffman.BitCode, numEpochs)
-	for eID := 0; eID < int(numEpochs); eID++ {
-		if len(epochToCelebsMap[eID]) == 0 {
-			continue
-		}
 
-		captureCoverage := 0.7 // If we allowed capture of more celebrities (say, 0.99) the kmeans would be starved of info
-		epochCelebsTruncated := TruncateMapWithEscapeCode(epochToCelebsMap[eID], 100000, captureCoverage, ESCAPE_VALUE)
-		huffCelebRoot := huffman.BuildHuffmanTree(epochCelebsTruncated)
-		epochToCelebCodes[eID] = make(map[int64]huffman.BitCode)
-		huffman.GenerateBitCodes(huffCelebRoot, 0, 0, epochToCelebCodes[eID])
+	// 2. Setup WaitGroup and Channel
+	//var wg sync.WaitGroup (use the previous one)
+	epochChan2 := make(chan int, numWorkers)
+
+	// 3. Start Workers
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for eID := range epochChan2 {
+				// Check for empty data
+				if len(epochToCelebsMap[eID]) == 0 {
+					continue
+				}
+
+				// --- THE ACTUAL LOGIC ---
+				captureCoverage := 0.7
+				epochCelebsTruncated, reason := TruncateMapWithEscapeCode(
+					epochToCelebsMap[eID], 100000, captureCoverage, ESCAPE_VALUE,
+				)
+				lock.Lock()
+				reasonHist[reason]++
+				lock.Unlock()
+
+				huffCelebRoot := huffman.BuildHuffmanTree(epochCelebsTruncated)
+				localCodes := make(map[int64]huffman.BitCode)
+				huffman.GenerateBitCodes(huffCelebRoot, 0, 0, localCodes)
+
+				// Thread-safe write to independent slice index
+				epochToCelebCodes[eID] = localCodes
+			}
+		}()
 	}
+
+	// 4. Feed the Workers
+	for eID := 0; eID < int(numEpochs); eID++ {
+		epochChan2 <- eID
+	}
+	close(epochChan2)
+	wg.Wait()
+
+	println(REASON_STRING_0, ": ", reasonHist[0], " occurances")
+	println(REASON_STRING_1, ": ", reasonHist[1], " occurances")
+	println(REASON_STRING_2, ": ", reasonHist[2], " occurances")
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression **==")
@@ -259,27 +317,52 @@ func GatherStatistics(folder string) error {
 
 	epochs := blocks/blocksPerEpoch + 1 // +1 for the partial epoch at the end
 	epochToPhasePeaks := kmeans.ParallelKMeans(amountsEachEpoch, epochs)
+	for eID := 0; eID < int(numEpochs); eID++ {
+		// Sort the 7 peaks for this epoch so Peak 0 is always the smallest phase
+		// and Peak 6 is always the largest.
+		sort.Float64s(epochToPhasePeaks[eID])
+	}
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Build residuals map (now parallel, now per EXP) **==")
 
-	residualsMapByExp := compress.ParallelGatherResidualFrequenciesByExp10(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, epochToPhasePeaks, MAX_BASE_10_EXP)
+	residualsMapByExp, combinedFreq := compress.ParallelGatherResidualFrequenciesByExp10(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, epochToPhasePeaks, MAX_BASE_10_EXP)
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** More Huffman stuff **==")
 
+	println("Huffman tree for combined peak and harmonic selection")
+	combinedTruncated, reason := TruncateMapWithEscapeCode(combinedFreq, 24, 1.0, ESCAPE_VALUE)
+	huffCombinedRoot := huffman.BuildHuffmanTree(combinedTruncated)
+	combinedCodes := make(map[int64]huffman.BitCode)
+	huffman.GenerateBitCodes(huffCombinedRoot, 0, 0, combinedCodes)
+	if reason == 0 {
+		println(REASON_STRING_0)
+	}
+	if reason == 1 {
+		println(REASON_STRING_1)
+	}
+	if reason == 2 {
+		println(REASON_STRING_2)
+	}
+
 	println("Huffman trees for clockPhase residuals AT EACH EXP MAGNITUDE")
 	residualCodesByExp := make([]map[int64]huffman.BitCode, MAX_BASE_10_EXP)
+	reasonHist = make(map[int]int64)
 	for exp := 0; exp < MAX_BASE_10_EXP; exp++ {
 		// Build a specific tree for this exponent
 		// Lets pick a max number of codes.
 		maxCodes := GetSensibleMaxCodes(exp)
-		residualTruncated := TruncateMapWithEscapeCode(residualsMapByExp[exp], maxCodes, 0.99, ESCAPE_VALUE)
+		residualTruncated, reason := TruncateMapWithEscapeCode(residualsMapByExp[exp], maxCodes, 0.99, ESCAPE_VALUE)
+		reasonHist[reason]++
 		println("Huffman tree for residuals...")
 		huffResidualRoot := huffman.BuildHuffmanTree(residualTruncated)
 		residualCodesByExp[exp] = make(map[int64]huffman.BitCode)
 		huffman.GenerateBitCodes(huffResidualRoot, 0, 0, residualCodesByExp[exp])
 	}
+	println(REASON_STRING_0, ": ", reasonHist[0], " occurances")
+	println(REASON_STRING_1, ": ", reasonHist[1], " occurances")
+	println(REASON_STRING_2, ": ", reasonHist[2], " occurances")
 
 	println("Huffman tree for literal magnitudes...")
 	magnitudesMap := make(map[int64]int64)
@@ -304,7 +387,7 @@ func GatherStatistics(folder string) error {
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression with kmeans **==")
 
-	result, peakStrengths := compress.ParallelSimulateCompressionWithKMeans(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, epochToPhasePeaks)
+	result, peakStrengths := compress.ParallelSimulateCompressionWithKMeans(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, epochToPhasePeaks)
 
 	println("TotalBits: ", result.TotalBits)
 	println("Celebrity hits: ", result.CelebrityHits)
