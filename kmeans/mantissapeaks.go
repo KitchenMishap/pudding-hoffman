@@ -31,14 +31,15 @@ func FindEpochPeaksMain(amounts []int64) []float64 {
 	betterFundamental, _ := FindBestAnchor(phases, fundamentalPhase)
 
 	result := []float64{}
-	// fundamental times logs representing 1.0, 1.1, 1.2, ..., 9.99
-	//for i := float64(1.00); i < 10.00; i += 0.1 {
-	//	result = append(result, math.Mod(betterFundamental+math.Log10(i), 1))
-	//}
+	// fundamental times logs representing 1.0, 1.1, 1.2, ..., 9.9
+	for i := float64(1.00); i < 10.00; i += 0.1 {
+		result = append(result, math.Mod(betterFundamental+math.Log10(i), 1))
+	}
+
 	// OR... Just the plain 1,2,5
-	result = append(result, math.Mod(betterFundamental+math.Log10(1), 1))
-	result = append(result, math.Mod(betterFundamental+math.Log10(2), 1))
-	result = append(result, math.Mod(betterFundamental+math.Log10(5), 1))
+	//result = append(result, math.Mod(betterFundamental+math.Log10(1), 1))
+	//result = append(result, math.Mod(betterFundamental+math.Log10(2), 1))
+	//result = append(result, math.Mod(betterFundamental+math.Log10(5), 1))
 
 	return result
 }
@@ -449,42 +450,6 @@ func expPeakResidual125(amount int64, logCentroids []float64) (exp int, peak int
 
 const MIN_AMOUNT_COUNT_FOR_ANALYSIS = 100
 
-func ParallelKMeansOLD(amountsEachEpoch [][]int64, epochs int64) [][]float64 {
-	epochToPhasePeaks := make([][]float64, epochs)
-	var wg sync.WaitGroup
-	var completed int64 // atomic counter
-
-	// Use a semaphore to limit concurrency to CPU count
-	sem := make(chan struct{}, runtime.NumCPU())
-
-	for i := int64(0); i < epochs; i++ {
-		wg.Add(1)
-		go func(epochID int64) {
-			defer wg.Done()
-			sem <- struct{}{}        // Acquire token
-			defer func() { <-sem }() // Release token
-
-			if len(amountsEachEpoch[epochID]) < MIN_AMOUNT_COUNT_FOR_ANALYSIS {
-				epochToPhasePeaks[epochID] = nil
-			} else {
-				// This is the heavy lifting
-				epochToPhasePeaks[epochID] = FindEpochPeaksMain(amountsEachEpoch[epochID])
-			}
-
-			// Report progress on completion
-			done := atomic.AddInt64(&completed, 1)
-			if done%10 == 0 || done == epochs {
-				fmt.Printf("\r> KMeans Progress: [%d/%d] epochs (%.1f%%)    ",
-					done, epochs, float64(done)/float64(epochs)*100)
-			}
-		}(i)
-	}
-
-	wg.Wait()
-	fmt.Println("\nKmeans done.")
-	return epochToPhasePeaks
-}
-
 func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int64,
 	celebCodesPerEpoch []map[int64]huffman.BitCode, blocksPerEpoch int64) [][]float64 {
 
@@ -534,7 +499,10 @@ func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int
 					amount := amounts[txo]
 					if _, ok := celebCodesPerEpoch[epochID][amount]; !ok {
 						// Only if NOT a celeb
-						buffer = append(buffer, amount)
+						// And thin it down
+						if txo-firstTxo < 1000 || (txo-firstTxo)%10 == 0 {
+							buffer = append(buffer, amount)
+						}
 					}
 				}
 				if len(buffer) < MIN_AMOUNT_COUNT_FOR_ANALYSIS {

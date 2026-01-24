@@ -20,13 +20,11 @@ type CompressionStats struct {
 
 func ParallelAmountStatistics(amounts []int64,
 	blocksPerEpoch int,
-	blocksPerPeriod int, // A period might be an epoch, or a microEpoch
 	blockToTxo []int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	max_base_10_exp int) (CompressionStats, []int64, []int64) {
 
 	blocks := len(blockToTxo)
-	periods := blocks/blocksPerPeriod + 1
 
 	fmt.Printf("Stage 1: ParallelAmountStatistics()\n")
 
@@ -40,10 +38,9 @@ func ParallelAmountStatistics(amounts []int64,
 	// Channels for distribution and collection
 	jobs := make(chan int, 100) // Block numbers get squirted into here
 	type workerResult struct {
-		stats          CompressionStats
-		literalsSample [][]int64
-		mags           []int64 // Base-2 magnitudes (for literals)
-		expFreqs       []int64 // Base-10 exponents (for K-Means)
+		stats    CompressionStats
+		mags     []int64 // Base-2 magnitudes (for literals)
+		expFreqs []int64 // Base-10 exponents (for K-Means)
 	}
 	resultsChan := make(chan workerResult, numWorkers)
 	var wg sync.WaitGroup
@@ -53,19 +50,12 @@ func ParallelAmountStatistics(amounts []int64,
 		go func() {
 			defer wg.Done()
 			local := workerResult{
-				literalsSample: make([][]int64, periods),
-				mags:           make([]int64, 65),
-				expFreqs:       make([]int64, max_base_10_exp),
-			}
-			// Optimization: Pre-allocate a 'slab' for each epoch in this worker
-			// Based on 5% sampling of a typical block, 5,000 is a very safe starting capacity
-			for e := 0; e < periods; e++ {
-				local.literalsSample[e] = make([]int64, 0, 5000)
+				mags:     make([]int64, 65),
+				expFreqs: make([]int64, max_base_10_exp),
 			}
 
 			for blockIdx := range jobs {
 				epochID := blockIdx / blocksPerEpoch
-				periodID := blockIdx / blocksPerPeriod
 				firstTxo := blockToTxo[blockIdx]
 				lastTxo := int64(len(amounts)) // Rare fallback
 				if blockIdx+1 < blocks {       // Usual case
@@ -83,12 +73,6 @@ func ParallelAmountStatistics(amounts []int64,
 
 					// (The new) Stage 2: Literal (Initial Pass)
 					local.stats.LiteralHits++
-					// The following append was probably a RAM Killer (froze my 768GB RAM machine!)
-					// We now only sample only 5% of data in a block to train the kmeans with.
-					// But we retain the first 100 samples, to avoid data starvation when blocks are small
-					if txo-firstTxo < 100 || txo%20 == 0 {
-						local.literalsSample[periodID] = append(local.literalsSample[periodID], amount)
-					}
 					local.mags[bits.Len64(uint64(amount))]++ // Increment for EVERY amount including zero
 					if amount > 0 {                          // Guard against log10(0)
 						exponent := int(math.Floor(math.Log10(float64(amount))))
@@ -114,7 +98,6 @@ func ParallelAmountStatistics(amounts []int64,
 	// --- REDUCE PHASE ---
 	finalStats := CompressionStats{}
 	finalMags := make([]int64, 65)
-	finalLiterals := make([][]int64, periods)
 	finalExpFreqs := make([]int64, max_base_10_exp)
 
 	for res := range resultsChan {
@@ -126,12 +109,6 @@ func ParallelAmountStatistics(amounts []int64,
 		}
 		for i := 0; i < max_base_10_exp; i++ {
 			finalExpFreqs[i] += res.expFreqs[i]
-		}
-
-		for p := 0; p < periods; p++ {
-			if len(res.literalsSample[p]) > 0 {
-				finalLiterals[p] = append(finalLiterals[p], res.literalsSample[p]...)
-			}
 		}
 	}
 
