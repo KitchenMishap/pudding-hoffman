@@ -31,9 +31,14 @@ func FindEpochPeaksMain(amounts []int64) []float64 {
 
 	result := []float64{}
 	// fundamental times logs representing 1.0, 1.1, 1.2, ..., 9.99
-	for i := float64(1.00); i < 10.00; i += 0.1 {
-		result = append(result, math.Mod(betterFundamental+math.Log10(i), 1))
-	}
+	//for i := float64(1.00); i < 10.00; i += 0.1 {
+	//	result = append(result, math.Mod(betterFundamental+math.Log10(i), 1))
+	//}
+	// OR... Just the plain 1,2,5
+	result = append(result, math.Mod(betterFundamental+math.Log10(1), 1))
+	result = append(result, math.Mod(betterFundamental+math.Log10(2), 1))
+	result = append(result, math.Mod(betterFundamental+math.Log10(5), 1))
+
 	return result
 }
 

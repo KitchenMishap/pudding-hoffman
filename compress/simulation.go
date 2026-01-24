@@ -8,6 +8,7 @@ import (
 	"math/bits"
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 type CompressionStats struct {
@@ -19,12 +20,15 @@ type CompressionStats struct {
 
 func ParallelAmountStatistics(amounts []int64,
 	blocksPerEpoch int,
+	blocksPerPeriod int, // A period might be an epoch, or a microEpoch
 	blockToTxo []int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	max_base_10_exp int) (CompressionStats, [][]int64, []int64, []int64) {
 
 	blocks := len(blockToTxo)
-	epochs := blocks/blocksPerEpoch + 1
+	periods := blocks/blocksPerPeriod + 1
+
+	fmt.Printf("Stage 1: ParallelAmountStatistics()\n")
 
 	fmt.Printf("Parallel phase...\n")
 
@@ -34,7 +38,7 @@ func ParallelAmountStatistics(amounts []int64,
 	} // Leave some free for OS
 
 	// Channels for distribution and collection
-	jobs := make(chan int, 100)
+	jobs := make(chan int, 100) // Block numbers get squirted into here
 	type workerResult struct {
 		stats          CompressionStats
 		literalsSample [][]int64
@@ -49,18 +53,19 @@ func ParallelAmountStatistics(amounts []int64,
 		go func() {
 			defer wg.Done()
 			local := workerResult{
-				literalsSample: make([][]int64, epochs),
+				literalsSample: make([][]int64, periods),
 				mags:           make([]int64, 65),
 				expFreqs:       make([]int64, max_base_10_exp),
 			}
 			// Optimization: Pre-allocate a 'slab' for each epoch in this worker
 			// Based on 5% sampling of a typical block, 5,000 is a very safe starting capacity
-			for e := 0; e < epochs; e++ {
+			for e := 0; e < periods; e++ {
 				local.literalsSample[e] = make([]int64, 0, 5000)
 			}
 
 			for blockIdx := range jobs {
 				epochID := blockIdx / blocksPerEpoch
+				periodID := blockIdx / blocksPerPeriod
 				firstTxo := blockToTxo[blockIdx]
 				lastTxo := int64(len(amounts)) // Rare fallback
 				if blockIdx+1 < blocks {       // Usual case
@@ -82,7 +87,7 @@ func ParallelAmountStatistics(amounts []int64,
 					// We now only sample only 5% of data in a block to train the kmeans with.
 					// But we retain the first 100 samples, to avoid data starvation when blocks are small
 					if txo-firstTxo < 100 || txo%20 == 0 {
-						local.literalsSample[epochID] = append(local.literalsSample[epochID], amount)
+						local.literalsSample[periodID] = append(local.literalsSample[periodID], amount)
 					}
 					local.mags[bits.Len64(uint64(amount))]++ // Increment for EVERY amount including zero
 					if amount > 0 {                          // Guard against log10(0)
@@ -109,7 +114,7 @@ func ParallelAmountStatistics(amounts []int64,
 	// --- REDUCE PHASE ---
 	finalStats := CompressionStats{}
 	finalMags := make([]int64, 65)
-	finalLiterals := make([][]int64, epochs)
+	finalLiterals := make([][]int64, periods)
 	finalExpFreqs := make([]int64, max_base_10_exp)
 
 	for res := range resultsChan {
@@ -123,9 +128,9 @@ func ParallelAmountStatistics(amounts []int64,
 			finalExpFreqs[i] += res.expFreqs[i]
 		}
 
-		for e := 0; e < epochs; e++ {
-			if len(res.literalsSample[e]) > 0 {
-				finalLiterals[e] = append(finalLiterals[e], res.literalsSample[e]...)
+		for p := 0; p < periods; p++ {
+			if len(res.literalsSample[p]) > 0 {
+				finalLiterals[p] = append(finalLiterals[p], res.literalsSample[p]...)
 			}
 		}
 	}
@@ -135,9 +140,10 @@ func ParallelAmountStatistics(amounts []int64,
 
 func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	blocksPerEpoch int,
+	blocksPerMicroEpoch int,
 	blockToTxo []int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
-	epochToPhasePeaks [][]float64,
+	microEpochToPhasePeaks [][]float64,
 	max_base_10_exp int) ([20]map[int64]int64, // First result: outer array index is the exponent (number of decimal zeros). Inner map is freq for each possible residual
 	map[int64]int64) { // Second result: frequencies of combined peak/harmonic index
 
@@ -153,7 +159,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	} // Leave some free for OS
 
 	// Channels for distribution and collection
-	jobs := make(chan int, 100)
+	jobs := make(chan int, 100) // Block numbers get squirted into here
 	if max_base_10_exp != 20 {
 		panic("You changed a constant!")
 	}
@@ -180,6 +186,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 
 			for blockIdx := range jobs {
 				epochID := blockIdx / blocksPerEpoch
+				microEpochID := blockIdx / blocksPerMicroEpoch
 				firstTxo := blockToTxo[blockIdx]
 				lastTxo := int64(len(amounts)) // Rare fallback
 				if blockIdx+1 < blocks {       // Usual case
@@ -194,13 +201,13 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 						continue
 					}
 
-					if epochToPhasePeaks[epochID] == nil || len(epochToPhasePeaks[epochID]) == 0 {
+					if microEpochToPhasePeaks[microEpochID] == nil || len(microEpochToPhasePeaks[microEpochID]) == 0 {
 						// This is probably an "early" week (epoch) where there weren't enough amount peaks to
 						// do the k-means analysis on (other than common "celebrity" amounts which bypass this already)
 						continue
 					}
 
-					e, peak, harmonic, r := kmeans.ExpPeakResidual(amount, epochToPhasePeaks[epochID])
+					e, peak, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
 					combined := peak*3 + harmonic
 					local.localCombinedFreq[int64(combined)]++
 
@@ -249,20 +256,23 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 }
 
 const MAX_PHASE_PEAKS = 1000
-const CSV_COLUMNS = 4
+const CSV_COLUMNS = 3
 
 func ParallelSimulateCompressionWithKMeans(amounts []int64,
 	blocksPerEpoch int,
+	blocksPerMicroEpoch int,
 	blockToTxo []int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	expCodes map[int64]huffman.BitCode,
 	residualCodesByExp []map[int64]huffman.BitCode,
 	magnitudeCodes map[int64]huffman.BitCode,
 	combinedCodes map[int64]huffman.BitCode,
-	epochToPhasePeaks [][]float64) (CompressionStats, [][CSV_COLUMNS]int64) {
+	microEpochToPhasePeaks [][]float64) (CompressionStats, [][CSV_COLUMNS]int64) {
+
+	completed := int64(0) // Atomic int
 
 	blocks := len(blockToTxo)
-	epochs := blocks/blocksPerEpoch + 1
+	microEpochs := blocks/blocksPerMicroEpoch + 1
 
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 4 {
@@ -282,11 +292,12 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 		go func() {
 			defer wg.Done()
 			local := workerResult{
-				peakStrengths: make([][CSV_COLUMNS]int64, epochs),
+				peakStrengths: make([][CSV_COLUMNS]int64, microEpochs),
 			}
 
 			for blockIdx := range jobs {
 				epochID := blockIdx / blocksPerEpoch
+				microEpochID := blockIdx / blocksPerMicroEpoch
 				firstTxo := blockToTxo[blockIdx]
 				lastTxo := int64(len(amounts)) // Rare fallback
 				if blockIdx+1 < blocks {       // Usual case
@@ -308,8 +319,8 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 					// Intended to capture the "ghosts" of round numbers in fiat-land, when they are converted to satoshis
 					ghostCost := math.MaxInt
 					// Amount 0 will trigger a log10(0) and things will go wrong. But we know amount 0 will be treated as a celeb or literal so we're not interested in the "ghost" cost of a zero
-					if amount > 0 && epochToPhasePeaks[epochID] != nil && len(epochToPhasePeaks[epochID]) > 0 {
-						e, peakIdx, harmonic, r := kmeans.ExpPeakResidual(amount, epochToPhasePeaks[epochID])
+					if amount > 0 && microEpochToPhasePeaks[microEpochID] != nil && len(microEpochToPhasePeaks[microEpochID]) > 0 {
+						e, peakIdx, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
 						if rCode, ok := residualCodesByExp[e][r]; ok {
 							//ghostCost = 3                           // Firstly there is a 3 bit cost to select which of the 7 stored peaks (for this epoch) we're near
 							//ghostCost += 2                          // And some bits to store the harmonic
@@ -372,6 +383,13 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 
 					local.stats.TotalBits += uint64(cost)
 				}
+
+				// Report progress on completion
+				done := atomic.AddInt64(&completed, 1)
+				if done%1000 == 0 || done == int64(blocks) {
+					fmt.Printf("\r> Progress: [%d/%d] blocks (%.1f%%)    ",
+						done, blocks, float64(done)/float64(blocks)*100)
+				}
 			}
 			resultsChan <- local
 		}()
@@ -384,19 +402,20 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 	close(jobs)
 	wg.Wait()
 	close(resultsChan)
+	fmt.Printf("\nDone that now\n")
 
 	// Final Reduction
 	globalStats := CompressionStats{}
-	globalStrengths := make([][CSV_COLUMNS]int64, epochs)
+	globalStrengths := make([][CSV_COLUMNS]int64, microEpochs)
 	for res := range resultsChan {
 		globalStats.TotalBits += res.stats.TotalBits
 		globalStats.CelebrityHits += res.stats.CelebrityHits
 		globalStats.KMeansHits += res.stats.KMeansHits
 		globalStats.LiteralHits += res.stats.LiteralHits
 
-		for e := 0; e < epochs; e++ {
+		for me := 0; me < microEpochs; me++ {
 			for p := 0; p < CSV_COLUMNS; p++ {
-				globalStrengths[e][p] += res.peakStrengths[e][p]
+				globalStrengths[me][p] += res.peakStrengths[me][p]
 			}
 		}
 	}

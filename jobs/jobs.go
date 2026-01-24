@@ -9,6 +9,8 @@ import (
 	"github.com/KitchenMishap/pudding-huffman/derived"
 	"github.com/KitchenMishap/pudding-huffman/huffman"
 	"github.com/KitchenMishap/pudding-huffman/kmeans"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 	"math"
 	"os"
 	"runtime"
@@ -53,15 +55,15 @@ func (h *Histograms) MergeAndSort() (shardsAmount map[int64]int64) {
 	println("Truncating...")
 	amountTruncated, reason := TruncateMapWithEscapeCode(amountsMap, 100000, 0.99, -1)
 	if reason == 0 {
-		println(REASON_STRING_0)
+		fmt.Printf(REASON_STRING_0)
 	}
 	if reason == 1 {
-		println(REASON_STRING_1)
+		fmt.Printf(REASON_STRING_1)
 	}
 	if reason == 2 {
-		println(REASON_STRING_2)
+		fmt.Printf(REASON_STRING_2)
 	}
-	println("Amount: truncated to (celebs)", len(amountTruncated))
+	fmt.Printf("Amount: truncated to %d (celebs)", len(amountTruncated))
 
 	return amountTruncated
 }
@@ -114,6 +116,7 @@ const MAX_BASE_10_EXP = 20
 func GatherStatistics(folder string) error {
 	var startTime = time.Now()
 	elapsed := time.Since(startTime)
+	fmt.Printf("The time is now: %s\n", startTime.Format(time.TimeOnly))
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Very start **==")
 
 	println("Please wait... opening files")
@@ -168,9 +171,10 @@ func GatherStatistics(folder string) error {
 		blockHandle, err = blockchainInterface.NextBlock(blockHandle)
 	}
 	numTxos := blockToTxo[blocks-1]
-	println("There are: ", numTxos, " txos in the first: ", blocks, " blocks.")
+	p := message.NewPrinter(language.English) // For commas between thousands
+	p.Printf("There are: %d txos in the first %d blocks\n", numTxos, blocks)
 
-	println("Gathering the amounts...")
+	fmt.Printf("Gathering the amounts (big file read coming...)\n")
 	derivedFiles, err := derived.NewDerivedFiles(folder)
 	if err != nil {
 		return err
@@ -184,11 +188,13 @@ func GatherStatistics(folder string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Gathering the amounts (...finished file read)\n")
 
 	elapsed = time.Since(startTime)
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Creating the celebrity histogramS PER EPOCH **==")
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Creating the celebrity histograms per epoch **==")
 
 	const blocksPerEpoch = 144 * 7 // Roughly a week
+	const blocksPerMicroEpoch = 6  // Roughly an hour
 	numEpochs := int64(blocks/blocksPerEpoch + 1)
 	numWorkers := int(runtime.NumCPU())
 	if numWorkers > 4 {
@@ -251,7 +257,7 @@ func GatherStatistics(folder string) error {
 	// END Stuff suggested by Gemini
 
 	elapsed = time.Since(startTime)
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Huffman per Epoch (now parallel) **==\n")
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Huffman per Epoch (now parallel) **==")
 
 	lock := sync.Mutex{}
 	reasonHist := make(map[int]int64)
@@ -301,40 +307,42 @@ func GatherStatistics(folder string) error {
 	close(epochChan2)
 	wg.Wait()
 
-	println(REASON_STRING_0, ": ", reasonHist[0], " occurances")
-	println(REASON_STRING_1, ": ", reasonHist[1], " occurances")
-	println(REASON_STRING_2, ": ", reasonHist[2], " occurances")
+	fmt.Printf("Statistics of why each map was truncated before being sent for Huffman encoding:\n")
+	fmt.Printf("%s: %d occurances\n", REASON_STRING_0, reasonHist[0])
+	fmt.Printf("%s: %d occurances\n", REASON_STRING_1, reasonHist[1])
+	fmt.Printf("%s: %d occurances\n", REASON_STRING_2, reasonHist[2])
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression **==")
-	result, amountsEachEpoch, magFreqs, expFreqs := compress.ParallelAmountStatistics(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, MAX_BASE_10_EXP)
+	result, amountsEachMicroEpoch, magFreqs, expFreqs := compress.ParallelAmountStatistics(amounts, blocksPerEpoch, blocksPerMicroEpoch, blockToTxo, epochToCelebCodes, MAX_BASE_10_EXP)
 
-	println("Celebrity hits: ", result.CelebrityHits)
-	println("Literal hits: ", result.LiteralHits)
+	fmt.Printf("Celebrity hits: %d\n", result.CelebrityHits)
+	fmt.Printf("Literal hits: %d\n", result.LiteralHits)
 
 	elapsed = time.Since(startTime)
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Doing kmeans stuff (parallel) **==")
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Identifying fiat peaks (parallel) **==")
 
-	epochs := blocks/blocksPerEpoch + 1 // +1 for the partial epoch at the end
-	epochToPhasePeaks := kmeans.ParallelKMeans(amountsEachEpoch, epochs)
-	for eID := 0; eID < int(numEpochs); eID++ {
+	microEpochs := blocks/blocksPerMicroEpoch + 1
+	microEpochToPhasePeaks := kmeans.ParallelKMeans(amountsEachMicroEpoch, microEpochs)
+	for meID := 0; meID < int(microEpochs); meID++ {
 		// Sort the peaks for this epoch so Peak 0 is always the smallest phase
-		sort.Float64s(epochToPhasePeaks[eID])
+		sort.Float64s(microEpochToPhasePeaks[meID])
 	}
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Build residuals map (now parallel, now per EXP) **==")
 
-	residualsMapByExp, combinedFreq := compress.ParallelGatherResidualFrequenciesByExp10(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, epochToPhasePeaks, MAX_BASE_10_EXP)
+	residualsMapByExp, combinedFreq := compress.ParallelGatherResidualFrequenciesByExp10(amounts, blocksPerEpoch, blocksPerMicroEpoch, blockToTxo, epochToCelebCodes, microEpochToPhasePeaks, MAX_BASE_10_EXP)
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** More Huffman stuff **==")
 
-	println("Huffman tree for combined peak and harmonic selection")
+	fmt.Printf("Huffman tree for combined peak and harmonic selection\n")
 	combinedTruncated, reason := TruncateMapWithEscapeCode(combinedFreq, 24, 1.0, ESCAPE_VALUE)
 	huffCombinedRoot := huffman.BuildHuffmanTree(combinedTruncated)
 	combinedCodes := make(map[int64]huffman.BitCode)
 	huffman.GenerateBitCodes(huffCombinedRoot, 0, 0, combinedCodes)
+	fmt.Printf("Reason (if any) why frequencies map was truncated\n")
 	if reason == 0 {
 		println(REASON_STRING_0)
 	}
@@ -345,7 +353,7 @@ func GatherStatistics(folder string) error {
 		println(REASON_STRING_2)
 	}
 
-	println("Huffman trees for clockPhase residuals AT EACH EXP MAGNITUDE")
+	fmt.Printf("Huffman trees for clockPhase residuals AT EACH EXP MAGNITUDE\n")
 	residualCodesByExp := make([]map[int64]huffman.BitCode, MAX_BASE_10_EXP)
 	reasonHist = make(map[int]int64)
 	for exp := 0; exp < MAX_BASE_10_EXP; exp++ {
@@ -354,16 +362,16 @@ func GatherStatistics(folder string) error {
 		maxCodes := GetSensibleMaxCodes(exp)
 		residualTruncated, reason := TruncateMapWithEscapeCode(residualsMapByExp[exp], maxCodes, 0.99, ESCAPE_VALUE)
 		reasonHist[reason]++
-		println("Huffman tree for residuals...")
 		huffResidualRoot := huffman.BuildHuffmanTree(residualTruncated)
 		residualCodesByExp[exp] = make(map[int64]huffman.BitCode)
 		huffman.GenerateBitCodes(huffResidualRoot, 0, 0, residualCodesByExp[exp])
 	}
-	println(REASON_STRING_0, ": ", reasonHist[0], " occurances")
-	println(REASON_STRING_1, ": ", reasonHist[1], " occurances")
-	println(REASON_STRING_2, ": ", reasonHist[2], " occurances")
+	fmt.Printf("Statistics of why each map was truncated before being sent for Huffman encoding:\n")
+	fmt.Printf("%s: %d occurances\n", REASON_STRING_0, reasonHist[0])
+	fmt.Printf("%s: %d occurances\n", REASON_STRING_1, reasonHist[1])
+	fmt.Printf("%s: %d occurances\n", REASON_STRING_2, reasonHist[2])
 
-	println("Huffman tree for literal magnitudes...")
+	fmt.Printf("Huffman tree for literal magnitudes...\n")
 	magnitudesMap := make(map[int64]int64)
 	for mag := int64(0); mag <= 64; mag++ {
 		freq := magFreqs[mag]
@@ -373,7 +381,7 @@ func GatherStatistics(folder string) error {
 	magnitudeCodes := make(map[int64]huffman.BitCode)
 	huffman.GenerateBitCodes(huffMagnitudeRoot, 0, 0, magnitudeCodes)
 
-	println("Huffman tree for base 10 exps...")
+	fmt.Printf("Huffman tree for base 10 exps...\n")
 	expsMap := make(map[int64]int64)
 	for exp := int64(0); exp < MAX_BASE_10_EXP; exp++ {
 		freq := expFreqs[exp]
@@ -384,19 +392,20 @@ func GatherStatistics(folder string) error {
 	huffman.GenerateBitCodes(huffExpRoot, 0, 0, expCodes)
 
 	elapsed = time.Since(startTime)
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression with kmeans **==")
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression with fiat peaks **==")
 
-	result, peakStrengths := compress.ParallelSimulateCompressionWithKMeans(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, epochToPhasePeaks)
+	result, microEpochToPeakStrengths := compress.ParallelSimulateCompressionWithKMeans(amounts, blocksPerEpoch, blocksPerMicroEpoch, blockToTxo, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, microEpochToPhasePeaks)
 
-	println("TotalBits: ", result.TotalBits)
-	println("Celebrity hits: ", result.CelebrityHits)
-	println("KMeans hits: ", result.KMeansHits)
-	println("Literal hits: ", result.LiteralHits)
+	p = message.NewPrinter(language.English) // For commas between thousands
+	p.Printf("TotalBits: %d\n", result.TotalBits)
+	p.Printf("BTC Celebrity hits: %d\n", result.CelebrityHits)
+	p.Printf("Fiat Ghost hits: %d\n", result.KMeansHits)
+	p.Printf("Literal hits: %d\n", result.LiteralHits)
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Finished **==")
 
-	exportOracleCSV("Oracle.csv", epochToPhasePeaks, peakStrengths)
+	exportOracleCSV("Oracle.csv", microEpochToPhasePeaks, microEpochToPeakStrengths)
 
 	return nil
 }
@@ -427,28 +436,28 @@ func GetSensibleMaxCodes(exponent int) int {
 	return needed
 }
 
-func exportOracleCSV(filename string, epochToPhasePeaks [][]float64, peakStrengths [][compress.CSV_COLUMNS]int64) {
+func exportOracleCSV(filename string, microEpochToPhasePeaks [][]float64, peakStrengths [][compress.CSV_COLUMNS]int64) {
 	f, _ := os.Create(filename)
 	defer f.Close()
 	w := csv.NewWriter(f)
 
-	header := []string{"Epoch"}
+	header := []string{"microEpoch"}
 	for i := 0; i < compress.CSV_COLUMNS; i++ {
 		header = append(header, fmt.Sprintf("P%d_Value", i), fmt.Sprintf("P%d_Strength", i))
 	}
 	w.Write(header)
 
-	for epochID, peaks := range epochToPhasePeaks {
+	for microEpochID, peaks := range microEpochToPhasePeaks {
 		if peaks == nil {
 			continue
 		}
-		row := []string{fmt.Sprintf("%d", epochID)}
+		row := []string{fmt.Sprintf("%d", microEpochID)}
 
 		results := make([]PeakResult, compress.CSV_COLUMNS)
 		for peakIdx := 0; peakIdx < compress.CSV_COLUMNS; peakIdx++ {
 			results[peakIdx] = PeakResult{
 				Value:    peaks[peakIdx],
-				Strength: peakStrengths[epochID][peakIdx],
+				Strength: peakStrengths[microEpochID][peakIdx],
 			}
 		}
 		sort.Slice(results, func(i, j int) bool {
