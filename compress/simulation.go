@@ -106,23 +106,11 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 					if err != nil {
 						return err
 					}
-					txoCount, err := trans.TxoCount()
+					txoAmounts, err := trans.AllTxoSatoshis()
 					if err != nil {
 						return err
 					}
-					for txoIndex := int64(0); txoIndex < txoCount; txoIndex++ {
-						txoHandle, err := trans.NthTxo(txoIndex)
-						if err != nil {
-							return err
-						}
-						txo, err := chain.TxoInterface(txoHandle)
-						if err != nil {
-							return err
-						}
-						sats, err := txo.Satoshis()
-						if err != nil {
-							return err
-						}
+					for _, sats := range txoAmounts {
 						amount := sats
 
 						// Back to existing code
@@ -286,23 +274,11 @@ func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockCha
 					if err != nil {
 						return err
 					}
-					txoCount, err := trans.TxoCount()
+					txoAmounts, err := trans.AllTxoSatoshis()
 					if err != nil {
 						return err
 					}
-					for txoIndex := int64(0); txoIndex < txoCount; txoIndex++ {
-						txoHandle, err := trans.NthTxo(txoIndex)
-						if err != nil {
-							return err
-						}
-						txo, err := chain.TxoInterface(txoHandle)
-						if err != nil {
-							return err
-						}
-						sats, err := txo.Satoshis()
-						if err != nil {
-							return err
-						}
+					for _, sats := range txoAmounts {
 						amount := sats
 						// END new iteration code
 

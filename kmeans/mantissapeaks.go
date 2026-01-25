@@ -488,7 +488,7 @@ func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int
 			// Create a local source unique to THIS epoch
 			// No matter which thread runs this, eID 866 (the suspect) always gets the same seed.
 			//salt := int64(0)	// This didn't freeze my PC
-			salt := int64(1) // Tried this salt next... YES AND NO (froze once, sailed once)
+			salt := int64(1) // Tried this salt next... YES AND NO (froze once, sailed once, froze a second time)
 			src := rand.NewSource(int64(epochID) + salt)
 			localRand := rand.New(src)
 

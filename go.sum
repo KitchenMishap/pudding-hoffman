@@ -8,6 +8,8 @@ github.com/KitchenMishap/pudding-shed v0.0.24 h1:Enfch7GidZ7hVYdJrJRS+0XhQyUh6zx
 github.com/KitchenMishap/pudding-shed v0.0.24/go.mod h1:w1zh2wLNJc6rzt8/3trEK+x7EsN/CbftHzI19Kc6meo=
 github.com/KitchenMishap/pudding-shed v0.0.25 h1:ywvhM/kD2R9K9Y8SByrY4EOcmXMP+kHU3EeAcs9oHvg=
 github.com/KitchenMishap/pudding-shed v0.0.25/go.mod h1:TCV1+tFt/fgmGgyx6u0wqJJhyx9Yb1vCV7Qd6TxoMfc=
+github.com/KitchenMishap/pudding-shed v0.0.26 h1:9ApUnO1K1C6hEKrwbbLqANeIz/BauUFVdxoKFHuF8lk=
+github.com/KitchenMishap/pudding-shed v0.0.26/go.mod h1:TCV1+tFt/fgmGgyx6u0wqJJhyx9Yb1vCV7Qd6TxoMfc=
 github.com/edsrzf/mmap-go v1.2.0 h1:hXLYlkbaPzt1SaQk+anYwKSRNhufIDCchSPkUD6dD84=
 github.com/edsrzf/mmap-go v1.2.0/go.mod h1:19H/e8pUPLicwkyNgOykDXkJ9F0MHE+Z52B8EIth78Q=
 golang.org/x/sync v0.19.0 h1:vV+1eWNmZ5geRlYjzm2adRgW2/mcpevXNg50YZtPCE4=
