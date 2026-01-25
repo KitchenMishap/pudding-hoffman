@@ -1,9 +1,12 @@
 package compress
 
 import (
+	"context"
 	"fmt"
 	"github.com/KitchenMishap/pudding-huffman/huffman"
 	"github.com/KitchenMishap/pudding-huffman/kmeans"
+	"github.com/KitchenMishap/pudding-shed/chainreadinterface"
+	"golang.org/x/sync/errgroup"
 	"math"
 	"math/bits"
 	"runtime"
@@ -18,11 +21,12 @@ type CompressionStats struct {
 	LiteralHits   uint64
 }
 
-func ParallelAmountStatistics(amounts []int64,
+func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
+	handles chainreadinterface.IHandleCreator,
 	blocksPerEpoch int,
 	blockToTxo []int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
-	max_base_10_exp int) (CompressionStats, []int64, []int64) {
+	max_base_10_exp int) (CompressionStats, []int64, []int64, error) {
 
 	blocks := len(blockToTxo)
 
@@ -36,7 +40,7 @@ func ParallelAmountStatistics(amounts []int64,
 	} // Leave some free for OS
 
 	// Channels for distribution and collection
-	jobs := make(chan int, 100) // Block numbers get squirted into here
+	jobsChan := make(chan int, 100) // Block numbers get squirted into here
 	type workerResult struct {
 		stats    CompressionStats
 		mags     []int64 // Base-2 magnitudes (for literals)
@@ -45,17 +49,30 @@ func ParallelAmountStatistics(amounts []int64,
 	resultsChan := make(chan workerResult, numWorkers)
 	var wg sync.WaitGroup
 
+	// Create an errgroup and a context
+	g, ctx := errgroup.WithContext(context.Background())
+
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go func() {
+		g.Go(func() error { // Use the errgroup instead of "go func() {"
 			defer wg.Done()
 			local := workerResult{
 				mags:     make([]int64, 65),
 				expFreqs: make([]int64, max_base_10_exp),
 			}
 
-			for blockIdx := range jobs {
+			for blockIdx := range jobsChan {
+				// Check if another worker already failed
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+
+				// Worker Logic ==START==
 				epochID := blockIdx / blocksPerEpoch
+
+				/* Old code
 				firstTxo := blockToTxo[blockIdx]
 				lastTxo := int64(len(amounts)) // Rare fallback
 				if blockIdx+1 < blocks {       // Usual case
@@ -64,33 +81,92 @@ func ParallelAmountStatistics(amounts []int64,
 
 				for txo := firstTxo; txo < lastTxo; txo++ {
 					amount := amounts[txo]
+					End old code */
 
-					// Stage 1: Celebrity
-					if _, ok := epochToCelebCodes[epochID][amount]; ok {
-						local.stats.CelebrityHits++
-						continue
+				// New transaction-aware code
+				blockHandle, err := handles.BlockHandleByHeight(int64(blockIdx))
+				if err != nil {
+					return err
+				}
+				block, err := chain.BlockInterface(blockHandle)
+				if err != nil {
+					return err
+				}
+				tCount, err := block.TransactionCount()
+				if err != nil {
+					return err
+				}
+				for t := int64(0); t < tCount; t++ {
+					transHandle, err := block.NthTransaction(t)
+					if err != nil {
+						return err
 					}
+					trans, err := chain.TransInterface(transHandle)
+					if err != nil {
+						return err
+					}
+					txoCount, err := trans.TxoCount()
+					if err != nil {
+						return err
+					}
+					for txoIndex := int64(0); txoIndex < txoCount; txoIndex++ {
+						txoHandle, err := trans.NthTxo(txoIndex)
+						if err != nil {
+							return err
+						}
+						txo, err := chain.TxoInterface(txoHandle)
+						if err != nil {
+							return err
+						}
+						sats, err := txo.Satoshis()
+						if err != nil {
+							return err
+						}
+						amount := sats
 
-					// (The new) Stage 2: Literal (Initial Pass)
-					local.stats.LiteralHits++
-					local.mags[bits.Len64(uint64(amount))]++ // Increment for EVERY amount including zero
-					if amount > 0 {                          // Guard against log10(0)
-						exponent := int(math.Floor(math.Log10(float64(amount))))
-						if exponent >= 0 && exponent < len(local.expFreqs) {
-							local.expFreqs[exponent]++
+						// Back to existing code
+
+						// Stage 1: Celebrity
+						if _, ok := epochToCelebCodes[epochID][amount]; ok {
+							local.stats.CelebrityHits++
+							continue
+						}
+
+						// (The new) Stage 2: Literal (Initial Pass)
+						local.stats.LiteralHits++
+						local.mags[bits.Len64(uint64(amount))]++ // Increment for EVERY amount including zero
+						if amount > 0 {                          // Guard against log10(0)
+							exponent := int(math.Floor(math.Log10(float64(amount))))
+							if exponent >= 0 && exponent < len(local.expFreqs) {
+								local.expFreqs[exponent]++
+							}
 						}
 					}
 				}
+				// Worker logic ==END==
 			}
 			resultsChan <- local
-		}()
+			return nil
+		})
 	}
 
-	// Feed the workers
-	for b := 0; b < blocks; b++ {
-		jobs <- b
+	// Feed the Channel (The Producer). This is now errgroup context-aware
+	go func() {
+		defer close(jobsChan)
+		for b := 0; b < blocks; b++ {
+			select { // Note: NOT a switch statement!
+			case jobsChan <- b: // This happens if a worker is free to be fed an epoch ID
+			case <-ctx.Done(): // This happens if a worker returned an err
+				return
+			}
+		}
+	}()
+
+	// Wait for completion and handle the error
+	if err := g.Wait(); err != nil {
+		return CompressionStats{}, nil, nil, err
 	}
-	close(jobs)
+
 	wg.Wait()
 	close(resultsChan)
 
@@ -112,7 +188,7 @@ func ParallelAmountStatistics(amounts []int64,
 		}
 	}
 
-	return finalStats, finalMags, finalExpFreqs
+	return finalStats, finalMags, finalExpFreqs, nil
 }
 
 func ParallelGatherResidualFrequenciesByExp10(amounts []int64,

@@ -12,7 +12,7 @@ import (
 
 const USE_125 = false
 
-func FindEpochPeaksMain(amounts []int64) []float64 {
+func FindEpochPeaksMain(amounts []int64, deterministic *rand.Rand) []float64 {
 	// 1. Map all mantissas to the 0.0 to 1.0 "Clock face"
 	phases := make([]float64, len(amounts))
 	for i, v := range amounts {
@@ -23,7 +23,7 @@ func FindEpochPeaksMain(amounts []int64) []float64 {
 		}
 	}
 
-	onePeak := findEpochPeaks(amounts, 1)
+	onePeak := findEpochPeaks(amounts, 1, deterministic)
 	if len(onePeak) == 0 {
 		return nil
 	}
@@ -153,16 +153,16 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 	return currentAnchor, badness
 }
 
-func findEpochPeaks(amounts []int64, k int) []float64 {
+func findEpochPeaks(amounts []int64, k int, deterministic *rand.Rand) []float64 {
 
 	if USE_125 {
-		return findEpochPeaks125(amounts, k)
+		return findEpochPeaks125(amounts, k, deterministic)
 	}
 
 	result := make([]float64, 0)
 	bestBadness := math.MaxFloat64
 	for try := 0; try < 5; try++ {
-		guess, badness := guessEpochPeaksClock(amounts, k)
+		guess, badness := guessEpochPeaksClock(amounts, k, deterministic)
 		if badness < bestBadness {
 			bestBadness = badness
 			result = guess
@@ -171,11 +171,11 @@ func findEpochPeaks(amounts []int64, k int) []float64 {
 	return result
 }
 
-func findEpochPeaks125(amounts []int64, k int) []float64 {
+func findEpochPeaks125(amounts []int64, k int, deterministic *rand.Rand) []float64 {
 	result := make([]float64, 0)
 	bestBadness := math.MaxFloat64
 	for try := 0; try < 5; try++ {
-		guess, badness := guessEpochPeaksClock125(amounts, k)
+		guess, badness := guessEpochPeaksClock125(amounts, k, deterministic)
 		if badness < bestBadness {
 			bestBadness = badness
 			result = guess
@@ -184,7 +184,7 @@ func findEpochPeaks125(amounts []int64, k int) []float64 {
 	return result
 }
 
-func guessEpochPeaksClock(amounts []int64, k int) (logCentroids []float64, badnessScore float64) {
+func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (logCentroids []float64, badnessScore float64) {
 	// 1. Map all mantissas to the 0.0 to 1.0 "Clock face"
 	phases := make([]float64, len(amounts))
 	for i, v := range amounts {
@@ -195,7 +195,7 @@ func guessEpochPeaksClock(amounts []int64, k int) (logCentroids []float64, badne
 		}
 	}
 
-	logCentroids = initializeCentroids(phases, k)
+	logCentroids = initializeCentroids(phases, k, deterministic)
 
 	for i := 0; i < 10; i++ { // 10 iterations is usually enough for 1D
 		clusters := make([][]float64, k)
@@ -233,7 +233,7 @@ const (
 	log5 = 0.69897000433 // math.Log10(5)
 )
 
-func guessEpochPeaksClock125(amounts []int64, k int) (logCentroids []float64, badnessScore float64) {
+func guessEpochPeaksClock125(amounts []int64, k int, deterministic *rand.Rand) (logCentroids []float64, badnessScore float64) {
 	phases := make([]float64, len(amounts))
 	for i, v := range amounts {
 		_, phases[i] = math.Modf(math.Log10(float64(v)))
@@ -242,7 +242,7 @@ func guessEpochPeaksClock125(amounts []int64, k int) (logCentroids []float64, ba
 		}
 	}
 
-	logCentroids = initializeCentroids(phases, k)
+	logCentroids = initializeCentroids(phases, k, deterministic)
 
 	for i := 0; i < 10; i++ {
 		clusters := make([][]float64, k)
@@ -341,11 +341,16 @@ func fmod(x, y float64) float64 {
 	return res
 }
 
-func initializeCentroids(mantissas []float64, k int) []float64 {
+func initializeCentroids(mantissas []float64, k int, deterministic *rand.Rand) []float64 {
 	result := make([]float64, k)
 	count := len(mantissas)
 	for i := 0; i < k; i++ {
-		r := rand.Intn(count)
+		var r int
+		if deterministic != nil {
+			r = deterministic.Intn(count)
+		} else {
+			r = rand.Intn(count)
+		}
 		c := mantissas[r]
 		result[i] = c
 	}
@@ -451,7 +456,7 @@ func expPeakResidual125(amount int64, logCentroids []float64) (exp int, peak int
 const MIN_AMOUNT_COUNT_FOR_ANALYSIS = 100
 
 func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int64,
-	celebCodesPerEpoch []map[int64]huffman.BitCode, blocksPerEpoch int64) [][]float64 {
+	celebCodesPerEpoch []map[int64]huffman.BitCode, blocksPerEpoch int64, deterministic *rand.Rand) [][]float64 {
 
 	fmt.Printf("Parallel peak detection by micro-epoch...\n")
 
@@ -479,6 +484,11 @@ func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int
 			defer func() { <-sem }() // Release token
 
 			buffer := make([]int64, 0, 5000)
+
+			// Create a local source unique to THIS epoch
+			// No matter which thread runs this, eID 866 (the suspect) always gets the same seed.
+			src := rand.NewSource(int64(epochID))
+			localRand := rand.New(src)
 
 			// Go through the microEpochs in this epoch
 			firstMe := epochID * microEpochsPerEpoch
@@ -509,16 +519,14 @@ func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int
 					microEpochToPhasePeaks[me] = nil
 				} else {
 					// This is the heavy lifting
-					microEpochToPhasePeaks[me] = FindEpochPeaksMain(buffer)
+					microEpochToPhasePeaks[me] = FindEpochPeaksMain(buffer, localRand)
 				}
 			}
 
 			// Report progress on completion
 			done := atomic.AddInt64(&completed, 1)
-			if done%10 == 0 || done == epochs {
-				fmt.Printf("\r> Peak detection progress: [%d/%d] epochs (%.1f%%)    ",
-					done, epochs, float64(done)/float64(epochs)*100)
-			}
+			fmt.Printf("\r> Peak detection progress: [%d/%d] epochs (%.1f%%)    ",
+				done, epochs, float64(done)/float64(epochs)*100)
 		}(i)
 	}
 

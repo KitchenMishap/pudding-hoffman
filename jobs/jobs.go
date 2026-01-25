@@ -13,6 +13,7 @@ import (
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 	"math"
+	"math/rand"
 	"os"
 	"runtime"
 	"sort"
@@ -114,7 +115,7 @@ const ESCAPE_VALUE = -2200000000000000
 // The maximum number of zeroes at the end of a base 10 number. 15 is about enough for max supply of sats.
 const MAX_BASE_10_EXP = 20
 
-func GatherStatistics(folder string) error {
+func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	var startTime = time.Now()
 	elapsed := time.Since(startTime)
 	fmt.Printf("The time is now: %s\n", startTime.Format(time.TimeOnly))
@@ -125,8 +126,9 @@ func GatherStatistics(folder string) error {
 	if err != nil {
 		return err
 	}
-	blockchainInterface := reader.Blockchain()
-	latestBlock, err := blockchainInterface.LatestBlock()
+	chain := reader.Blockchain()
+	handles := reader.HandleCreator()
+	latestBlock, err := chain.LatestBlock()
 	if err != nil {
 		return err
 	}
@@ -137,12 +139,12 @@ func GatherStatistics(folder string) error {
 
 	fmt.Printf("Gathering tx info for each block...\n")
 	blockHeight := int64(0)
-	blockHandle := blockchainInterface.GenesisBlock()
+	blockHandle := chain.GenesisBlock()
 	for {
 		if blockHeight%100000 == 0 {
 			fmt.Printf("Block: %d\n", blockHeight)
 		}
-		block, err := blockchainInterface.BlockInterface(blockHandle)
+		block, err := chain.BlockInterface(blockHandle)
 		if err != nil {
 			return err
 		}
@@ -150,7 +152,7 @@ func GatherStatistics(folder string) error {
 		if err != nil {
 			return err
 		}
-		trans, err := blockchainInterface.TransInterface(transHandle)
+		trans, err := chain.TransInterface(transHandle)
 		if err != nil {
 			return err
 		}
@@ -167,7 +169,7 @@ func GatherStatistics(folder string) error {
 		if blockHeight == blocks {
 			break
 		}
-		blockHandle, err = blockchainInterface.NextBlock(blockHandle)
+		blockHandle, err = chain.NextBlock(blockHandle)
 	}
 	numTxos := blockToTxo[blocks-1]
 	p := message.NewPrinter(language.English) // For commas between thousands
@@ -239,8 +241,7 @@ func GatherStatistics(folder string) error {
 					endBlock = blocks
 				}
 
-				chain := reader.Blockchain() // New code
-				handles := reader.HandleCreator()
+				// New code
 				blockHandle, err := handles.BlockHandleByHeight(startBlock)
 				if err != nil {
 					return err
@@ -384,7 +385,10 @@ func GatherStatistics(folder string) error {
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression **==")
-	result, magFreqs, expFreqs := compress.ParallelAmountStatistics(amounts, blocksPerEpoch, blockToTxo, epochToCelebCodes, MAX_BASE_10_EXP)
+	result, magFreqs, expFreqs, err := compress.ParallelAmountStatistics(chain, handles, blocksPerEpoch, blockToTxo, epochToCelebCodes, MAX_BASE_10_EXP)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("Celebrity hits: %d\n", result.CelebrityHits)
 	fmt.Printf("Literal hits: %d\n", result.LiteralHits)
@@ -393,7 +397,7 @@ func GatherStatistics(folder string) error {
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Identifying fiat peaks (parallel) **==")
 
 	microEpochs := blocks/blocksPerMicroEpoch + 1
-	microEpochToPhasePeaks := kmeans.ParallelKMeans(amounts, blockToTxo, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch)
+	microEpochToPhasePeaks := kmeans.ParallelKMeans(amounts, blockToTxo, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch, deterministic)
 	for meID := 0; meID < int(microEpochs); meID++ {
 		// Sort the peaks for this epoch so Peak 0 is always the smallest phase
 		sort.Float64s(microEpochToPhasePeaks[meID])
