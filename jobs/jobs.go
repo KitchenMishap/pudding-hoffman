@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"github.com/KitchenMishap/pudding-huffman/compress"
 	"github.com/KitchenMishap/pudding-huffman/huffman"
 	"github.com/KitchenMishap/pudding-huffman/kmeans"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 	"math"
@@ -203,20 +205,31 @@ func GatherStatistics(folder string) error {
 
 	// Here we use the "worker pool" ("feed the  beast") pattern
 	// 1. Create a channel to hold the epochIDs
-	epochChan := make(chan int, 0)
+	epochChan := make(chan int) // epochIDs get squirted into here
 
 	// 2. Create a slice to store the results (one map per epoch)
 	epochToCelebsMap := make([]map[int64]int64, numEpochs)
 
 	var wg sync.WaitGroup
 
+	// Create an errgroup and a context
+	g, ctx := errgroup.WithContext(context.Background())
+
 	// 3. Start the pool of workers
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go func() {
+		g.Go(func() error { // Use the errgroup instead of "go func() {"
 			defer wg.Done()
+
 			// Workers pull from the channel until it's closed
 			for eID := range epochChan {
+				// Check if another worker already failed
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+
 				// --- WORKER LOGIC START ---
 				localMap := make(map[int64]int64)
 
@@ -226,7 +239,14 @@ func GatherStatistics(folder string) error {
 					endBlock = blocks
 				}
 
+				chain := reader.Blockchain() // New code
+				handles := reader.HandleCreator()
+				blockHandle, err := handles.BlockHandleByHeight(startBlock)
+				if err != nil {
+					return err
+				}
 				for b := startBlock; b < endBlock; b++ {
+					/* Old code
 					txoStart := blockToTxo[b]
 					txoEnd := numTxos // Rare fallback
 					if b+1 < blocks {
@@ -235,6 +255,49 @@ func GatherStatistics(folder string) error {
 
 					for m := txoStart; m < txoEnd; m++ {
 						localMap[amounts[m]]++
+					}*/
+
+					// New transaction-aware code
+					block, err := chain.BlockInterface(blockHandle)
+					if err != nil {
+						return err
+					}
+					tCount, err := block.TransactionCount()
+					if err != nil {
+						return err
+					}
+					for t := int64(0); t < tCount; t++ {
+						transHandle, err := block.NthTransaction(t)
+						if err != nil {
+							return err
+						}
+						trans, err := chain.TransInterface(transHandle)
+						if err != nil {
+							return err
+						}
+						txoCount, err := trans.TxoCount()
+						if err != nil {
+							return err
+						}
+						for txoIndex := int64(0); txoIndex < txoCount; txoIndex++ {
+							txoHandle, err := trans.NthTxo(txoIndex)
+							if err != nil {
+								return err
+							}
+							txo, err := chain.TxoInterface(txoHandle)
+							if err != nil {
+								return err
+							}
+							sats, err := txo.Satoshis()
+							if err != nil {
+								return err
+							}
+							localMap[sats]++
+						}
+					}
+					blockHandle, err = chain.NextBlock(blockHandle)
+					if err != nil {
+						return err
 					}
 				}
 
@@ -242,18 +305,25 @@ func GatherStatistics(folder string) error {
 				epochToCelebsMap[eID] = localMap
 				// --- WORKER LOGIC END ---
 			}
-		}()
+			return nil
+		})
 	}
-	// 4. Feed the Channel (The Producer)
-	for eID := 0; eID < int(numEpochs); eID++ {
-		if eID%100 == 0 {
-			fmt.Println("Feeding epoch: ", eID)
+	// 4. Feed the Channel (The Producer). This is now errgroup context-aware
+	go func() {
+		defer close(epochChan)
+		for eID := 0; eID < int(numEpochs); eID++ {
+			select { // Note: NOT a switch statement!
+			case epochChan <- eID: // This happens if a worker is free to be fed an epoch ID
+			case <-ctx.Done(): // This happens if a worker returned an err
+				return
+			}
 		}
-		epochChan <- eID
-	}
-	close(epochChan) // Crucial: Workers stop when the channel is empty and closed
+	}()
 
-	wg.Wait()
+	// Wait for completion and handle the error
+	if err := g.Wait(); err != nil {
+		return err
+	}
 	// END Stuff suggested by Gemini
 
 	elapsed = time.Since(startTime)
