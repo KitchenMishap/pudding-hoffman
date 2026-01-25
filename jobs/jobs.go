@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/KitchenMishap/pudding-huffman/blockchain"
 	"github.com/KitchenMishap/pudding-huffman/compress"
-	"github.com/KitchenMishap/pudding-huffman/derived"
 	"github.com/KitchenMishap/pudding-huffman/huffman"
 	"github.com/KitchenMishap/pudding-huffman/kmeans"
 	"golang.org/x/text/language"
@@ -119,30 +118,28 @@ func GatherStatistics(folder string) error {
 	fmt.Printf("The time is now: %s\n", startTime.Format(time.TimeOnly))
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Very start **==")
 
-	println("Please wait... opening files")
+	fmt.Printf("\n")
 	reader, err := blockchain.NewChainReader(folder)
 	if err != nil {
 		return err
 	}
-	println("Finished opening files.")
 	blockchainInterface := reader.Blockchain()
 	latestBlock, err := blockchainInterface.LatestBlock()
 	if err != nil {
 		return err
 	}
-	println("The last block height is:", latestBlock.Height())
+	fmt.Printf("The last block height is: %d\n", latestBlock.Height())
 
 	blocks := latestBlock.Height() + 1
 	blockToTxo := make([]int64, blocks)
 
-	println("Gathering txo indices for each block...")
+	fmt.Printf("Gathering tx info for each block...\n")
 	blockHeight := int64(0)
 	blockHandle := blockchainInterface.GenesisBlock()
 	for {
 		if blockHeight%100000 == 0 {
-			println("Block: ", blockHeight)
+			fmt.Printf("Block: %d\n", blockHeight)
 		}
-
 		block, err := blockchainInterface.BlockInterface(blockHandle)
 		if err != nil {
 			return err
@@ -175,20 +172,23 @@ func GatherStatistics(folder string) error {
 	p.Printf("There are: %d txos in the first %d blocks\n", numTxos, blocks)
 
 	fmt.Printf("Gathering the amounts (big file read coming...)\n")
-	derivedFiles, err := derived.NewDerivedFiles(folder)
+	satsFile := reader.Privileged().TxoSatsFile()
+
+	amountsCount, err := satsFile.CountWords()
 	if err != nil {
 		return err
 	}
-	err = derivedFiles.OpenReadOnly()
-	if err != nil {
-		return err
+	amounts := make([]int64, amountsCount)
+	for i := int64(0); i < amountsCount; i++ {
+		amounts[i], err = satsFile.ReadWordAt(i)
+		if err != nil {
+			return err
+		}
+		if i%1000000 == 0 {
+			fmt.Printf("\r%.1f%%   ", float64(100*i)/float64(amountsCount))
+		}
 	}
-	satsFile := derivedFiles.PrivilegedFiles().TxoSatsFile()
-	amounts, err := satsFile.ReadWholeFileAsInt64s()
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Gathering the amounts (...finished file read)\n")
+	fmt.Printf("\nGathering the amounts (...finished file read)\n")
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Creating the celebrity histograms per epoch **==")
