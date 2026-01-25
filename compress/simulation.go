@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type CompressionStats struct {
@@ -191,7 +192,7 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 	return finalStats, finalMags, finalExpFreqs, nil
 }
 
-func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
+func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockChain, handles chainreadinterface.IHandleCreator,
 	blocksPerEpoch int,
 	blocksPerMicroEpoch int,
 	blockToTxo []int64,
@@ -212,7 +213,7 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	} // Leave some free for OS
 
 	// Channels for distribution and collection
-	jobs := make(chan int, 100) // Block numbers get squirted into here
+	jobsChan := make(chan int, 100) // Block numbers get squirted into here
 	if max_base_10_exp != 20 {
 		panic("You changed a constant!")
 	}
@@ -224,10 +225,14 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 	resultsChan := make(chan workerResult, numWorkers)
 	var wg sync.WaitGroup
 
+	// Create an errgroup and a context
+	g, ctx := errgroup.WithContext(context.Background())
+
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go func() {
+		g.Go(func() error { // Use the errgroup instead of "go func() {"
 			defer wg.Done()
+
 			if max_base_10_exp != 20 {
 				panic("You changed a constant!")
 			}
@@ -237,9 +242,18 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 				local.localResidualsByExp[i] = make(map[int64]int64, MAX_PHASE_PEAKS)
 			}
 
-			for blockIdx := range jobs {
+			for blockIdx := range jobsChan {
+				// Check if another worker already failed
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+
 				epochID := blockIdx / blocksPerEpoch
 				microEpochID := blockIdx / blocksPerMicroEpoch
+
+				/* Old iteration code
 				firstTxo := blockToTxo[blockIdx]
 				lastTxo := int64(len(amounts)) // Rare fallback
 				if blockIdx+1 < blocks {       // Usual case
@@ -247,41 +261,95 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 				}
 
 				for txo := firstTxo; txo < lastTxo; txo++ {
-					amount := amounts[txo]
+					amount := amounts[txo] */
 
-					// Stage 1: Celebrity
-					if _, ok := epochToCelebCodes[epochID][amount]; ok {
-						continue
+				// New transaction-based iteration code...
+				// New transaction-aware code
+				blockHandle, err := handles.BlockHandleByHeight(int64(blockIdx))
+				if err != nil {
+					return err
+				}
+				block, err := chain.BlockInterface(blockHandle)
+				if err != nil {
+					return err
+				}
+				tCount, err := block.TransactionCount()
+				if err != nil {
+					return err
+				}
+				for t := int64(0); t < tCount; t++ {
+					transHandle, err := block.NthTransaction(t)
+					if err != nil {
+						return err
 					}
-
-					if microEpochToPhasePeaks[microEpochID] == nil || len(microEpochToPhasePeaks[microEpochID]) == 0 {
-						// This is probably an "early" week (epoch) where there weren't enough amount peaks to
-						// do the k-means analysis on (other than common "celebrity" amounts which bypass this already)
-						continue
+					trans, err := chain.TransInterface(transHandle)
+					if err != nil {
+						return err
 					}
+					txoCount, err := trans.TxoCount()
+					if err != nil {
+						return err
+					}
+					for txoIndex := int64(0); txoIndex < txoCount; txoIndex++ {
+						txoHandle, err := trans.NthTxo(txoIndex)
+						if err != nil {
+							return err
+						}
+						txo, err := chain.TxoInterface(txoHandle)
+						if err != nil {
+							return err
+						}
+						sats, err := txo.Satoshis()
+						if err != nil {
+							return err
+						}
+						amount := sats
+						// END new iteration code
 
-					e, peak, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
-					combined := peak*3 + harmonic
-					local.localCombinedFreq[int64(combined)]++
+						// Stage 1: Celebrity
+						if _, ok := epochToCelebCodes[epochID][amount]; ok {
+							continue
+						}
 
-					if e >= 0 && e < max_base_10_exp {
-						local.localResidualsByExp[e][r]++
+						if microEpochToPhasePeaks[microEpochID] == nil || len(microEpochToPhasePeaks[microEpochID]) == 0 {
+							// This is probably an "early" week (epoch) where there weren't enough amount peaks to
+							// do the k-means analysis on (other than common "celebrity" amounts which bypass this already)
+							continue
+						}
+
+						e, peak, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
+						combined := peak*3 + harmonic
+						local.localCombinedFreq[int64(combined)]++
+
+						if e >= 0 && e < max_base_10_exp {
+							local.localResidualsByExp[e][r]++
+						}
 					}
 				}
 			}
 			resultsChan <- local
-		}()
+			return nil
+		})
 	}
 
 	// Feed the workers
-	for b := 0; b < blocks; b++ {
-		jobs <- b
-	}
-	close(jobs)
+	go func() {
+		defer close(jobsChan)
+		for b := 0; b < blocks; b++ {
+			select { // Note: NOT a switch statement!
+			case jobsChan <- b: // This happens if a worker is free to be fed an epoch ID
+			case <-ctx.Done(): // This happens if a worker returned an err
+				return
+			}
+		}
+	}()
+
 	wg.Wait()
 	close(resultsChan)
 
-	fmt.Printf("Reduce phase (serial)...\n")
+	serialStartTime := time.Now()
+	fmt.Printf("Starting Reduce phase (serial)...\n")
+
 	if max_base_10_exp != 20 {
 		panic("You changed a constant!")
 	}
@@ -304,6 +372,9 @@ func ParallelGatherResidualFrequenciesByExp10(amounts []int64,
 			}
 		}
 	}
+
+	elapsed := time.Since(serialStartTime)
+	fmt.Printf("Reduce phase (serial)... (alone) took [%5.1f min]\n", elapsed.Minutes())
 
 	return finalResidualsByExp, finalCombinedFreqs
 }

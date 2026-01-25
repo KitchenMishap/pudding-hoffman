@@ -116,13 +116,13 @@ const ESCAPE_VALUE = -2200000000000000
 const MAX_BASE_10_EXP = 20
 
 func GatherStatistics(folder string, deterministic *rand.Rand) error {
+	reader, err := blockchain.NewChainReader(folder)
+
 	var startTime = time.Now()
 	elapsed := time.Since(startTime)
 	fmt.Printf("The time is now: %s\n", startTime.Format(time.TimeOnly))
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Very start **==")
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Very start Kinda (after user has typed!) **==")
 
-	fmt.Printf("\n")
-	reader, err := blockchain.NewChainReader(folder)
 	if err != nil {
 		return err
 	}
@@ -406,7 +406,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Build residuals map (now parallel, now per EXP) **==")
 
-	residualsMapByExp, combinedFreq := compress.ParallelGatherResidualFrequenciesByExp10(amounts, blocksPerEpoch, blocksPerMicroEpoch, blockToTxo, epochToCelebCodes, microEpochToPhasePeaks, MAX_BASE_10_EXP)
+	residualsMapByExp, combinedFreq := compress.ParallelGatherResidualFrequenciesByExp10(chain, handles, blocksPerEpoch, blocksPerMicroEpoch, blockToTxo, epochToCelebCodes, microEpochToPhasePeaks, MAX_BASE_10_EXP)
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** More Huffman stuff **==")
