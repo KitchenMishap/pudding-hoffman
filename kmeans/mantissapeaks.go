@@ -1,12 +1,14 @@
 package kmeans
 
 import (
+	"context"
 	"fmt"
 	"github.com/KitchenMishap/pudding-huffman/huffman"
+	"github.com/KitchenMishap/pudding-shed/chainreadinterface"
+	"golang.org/x/sync/errgroup"
 	"math"
 	"math/rand"
 	"runtime"
-	"sync"
 	"sync/atomic"
 )
 
@@ -455,18 +457,16 @@ func expPeakResidual125(amount int64, logCentroids []float64) (exp int, peak int
 
 const MIN_AMOUNT_COUNT_FOR_ANALYSIS = 100
 
-func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int64,
-	celebCodesPerEpoch []map[int64]huffman.BitCode, blocksPerEpoch int64, deterministic *rand.Rand) [][]float64 {
+func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinterface.IHandleCreator, blocks int64, blocksPerMicroEpoch int64,
+	celebCodesPerEpoch []map[int64]huffman.BitCode, blocksPerEpoch int64, deterministic *rand.Rand) ([][]float64, error) {
 
 	fmt.Printf("Parallel peak detection by micro-epoch...\n")
 
-	blocks := int64(len(blockToTxo))
 	epochs := blocks/blocksPerEpoch + 1
 	microEpochs := blocks/blocksPerMicroEpoch + 1
 	microEpochToPhasePeaks := make([][]float64, microEpochs)
 	microEpochsPerEpoch := blocksPerEpoch / blocksPerMicroEpoch
 
-	var wg sync.WaitGroup
 	var completed int64 // atomic counter
 
 	// Use a semaphore to limit concurrency to CPU count
@@ -474,15 +474,24 @@ func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int
 	if numWorkers > 4 {
 		numWorkers -= 2 // Save some for OS
 	}
+
+	g, ctx := errgroup.WithContext(context.Background())
 	sem := make(chan struct{}, numWorkers)
 
 	for i := int64(0); i < epochs; i++ {
-		wg.Add(1)
-		go func(epochID int64) {
-			defer wg.Done()
-			sem <- struct{}{}        // Acquire token
-			defer func() { <-sem }() // Release token
+		epochID := i // Capture for closure
+		g.Go(func() error {
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
+			// Check if another worker failed
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			// Rest of my logic...
 			buffer := make([]int64, 0, 5000)
 
 			// Create a local source unique to THIS epoch
@@ -503,36 +512,70 @@ func ParallelKMeans(amounts []int64, blockToTxo []int64, blocksPerMicroEpoch int
 				if lastBlock > blocks {
 					lastBlock = blocks
 				}
-				firstTxo := blockToTxo[firstBlock]
-				lastTxo := blockToTxo[lastBlock]
 
-				buffer = buffer[:0] // Reset buffer but keep allocated memory
-				for txo := firstTxo; txo < lastTxo; txo++ {
-					amount := amounts[txo]
-					if _, ok := celebCodesPerEpoch[epochID][amount]; !ok {
-						// Only if NOT a celeb
-						// And thin it down
-						if txo-firstTxo < 1000 || (txo-firstTxo)%10 == 0 {
-							buffer = append(buffer, amount)
-						}
+				// Go through the blocks in the microEpoch
+				for blockIdx := firstBlock; blockIdx < lastBlock; blockIdx++ {
+					blockHandle, err := handles.BlockHandleByHeight(int64(blockIdx))
+					if err != nil {
+						return err
 					}
-				}
-				if len(buffer) < MIN_AMOUNT_COUNT_FOR_ANALYSIS {
-					microEpochToPhasePeaks[me] = nil
-				} else {
-					// This is the heavy lifting
-					microEpochToPhasePeaks[me] = FindEpochPeaksMain(buffer, localRand)
-				}
-			}
+					block, err := chain.BlockInterface(blockHandle)
+					if err != nil {
+						return err
+					}
+					tCount, err := block.TransactionCount()
+					if err != nil {
+						return err
+					}
+					for t := int64(0); t < tCount; t++ {
+						transHandle, err := block.NthTransaction(t)
+						if err != nil {
+							return err
+						}
+						trans, err := chain.TransInterface(transHandle)
+						if err != nil {
+							return err
+						}
+						txoAmounts, err := trans.AllTxoSatoshis()
+						if err != nil {
+							return err
+						}
+						buffer = buffer[:0] // Reset buffer but keep allocated memory
 
-			// Report progress on completion
+						for txo, sats := range txoAmounts {
+							amount := sats
+
+							if _, ok := celebCodesPerEpoch[epochID][amount]; !ok {
+								// Only if NOT a celeb
+								// And thin it down
+								if txo < 1000 || txo%10 == 0 {
+									buffer = append(buffer, amount)
+								}
+							}
+						}
+
+						if len(buffer) < MIN_AMOUNT_COUNT_FOR_ANALYSIS {
+							microEpochToPhasePeaks[me] = nil
+						} else {
+							// This is the heavy lifting
+							microEpochToPhasePeaks[me] = FindEpochPeaksMain(buffer, localRand)
+						}
+					} // for transactions
+				} // for blocks
+			} // for micro epochs
+
+			// Report progress on completion of epoch
 			done := atomic.AddInt64(&completed, 1)
 			fmt.Printf("\r> Peak detection progress: [%d/%d] epochs (%.1f%%)    ",
 				done, epochs, float64(done)/float64(epochs)*100)
-		}(i)
+
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
-	wg.Wait()
 	fmt.Println("\n Peak detection done.")
-	return microEpochToPhasePeaks
+	return microEpochToPhasePeaks, nil
 }

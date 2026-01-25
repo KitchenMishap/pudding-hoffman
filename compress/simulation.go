@@ -24,12 +24,10 @@ type CompressionStats struct {
 
 func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 	handles chainreadinterface.IHandleCreator,
-	blocksPerEpoch int,
-	blockToTxo []int64,
+	blocks int64,
+	blocksPerEpoch int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	max_base_10_exp int) (CompressionStats, []int64, []int64, error) {
-
-	blocks := len(blockToTxo)
 
 	fmt.Printf("Stage 1: ParallelAmountStatistics()\n")
 
@@ -41,7 +39,7 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 	} // Leave some free for OS
 
 	// Channels for distribution and collection
-	jobsChan := make(chan int, 100) // Block numbers get squirted into here
+	jobsChan := make(chan int64, 100) // Block numbers get squirted into here
 	type workerResult struct {
 		stats    CompressionStats
 		mags     []int64 // Base-2 magnitudes (for literals)
@@ -73,18 +71,6 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 				// Worker Logic ==START==
 				epochID := blockIdx / blocksPerEpoch
 
-				/* Old code
-				firstTxo := blockToTxo[blockIdx]
-				lastTxo := int64(len(amounts)) // Rare fallback
-				if blockIdx+1 < blocks {       // Usual case
-					lastTxo = blockToTxo[blockIdx+1]
-				}
-
-				for txo := firstTxo; txo < lastTxo; txo++ {
-					amount := amounts[txo]
-					End old code */
-
-				// New transaction-aware code
 				blockHandle, err := handles.BlockHandleByHeight(int64(blockIdx))
 				if err != nil {
 					return err
@@ -142,7 +128,7 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 	// Feed the Channel (The Producer). This is now errgroup context-aware
 	go func() {
 		defer close(jobsChan)
-		for b := 0; b < blocks; b++ {
+		for b := int64(0); b < blocks; b++ {
 			select { // Note: NOT a switch statement!
 			case jobsChan <- b: // This happens if a worker is free to be fed an epoch ID
 			case <-ctx.Done(): // This happens if a worker returned an err
@@ -181,17 +167,15 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 }
 
 func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockChain, handles chainreadinterface.IHandleCreator,
-	blocksPerEpoch int,
-	blocksPerMicroEpoch int,
-	blockToTxo []int64,
+	blocksPerEpoch int64,
+	blocksPerMicroEpoch int64,
+	blocks int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	microEpochToPhasePeaks [][]float64,
 	max_base_10_exp int) ([20]map[int64]int64, // First result: outer array index is the exponent (number of decimal zeros). Inner map is freq for each possible residual
 	map[int64]int64) { // Second result: frequencies of combined peak/harmonic index
 
 	fmt.Printf("Stage 1.5, gather frequencies of residuals by exp magnitude\n")
-
-	blocks := len(blockToTxo)
 
 	fmt.Printf("Parallel phase...\n")
 
@@ -201,7 +185,7 @@ func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockCha
 	} // Leave some free for OS
 
 	// Channels for distribution and collection
-	jobsChan := make(chan int, 100) // Block numbers get squirted into here
+	jobsChan := make(chan int64, 100) // Block numbers get squirted into here
 	if max_base_10_exp != 20 {
 		panic("You changed a constant!")
 	}
@@ -241,18 +225,6 @@ func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockCha
 				epochID := blockIdx / blocksPerEpoch
 				microEpochID := blockIdx / blocksPerMicroEpoch
 
-				/* Old iteration code
-				firstTxo := blockToTxo[blockIdx]
-				lastTxo := int64(len(amounts)) // Rare fallback
-				if blockIdx+1 < blocks {       // Usual case
-					lastTxo = blockToTxo[blockIdx+1]
-				}
-
-				for txo := firstTxo; txo < lastTxo; txo++ {
-					amount := amounts[txo] */
-
-				// New transaction-based iteration code...
-				// New transaction-aware code
 				blockHandle, err := handles.BlockHandleByHeight(int64(blockIdx))
 				if err != nil {
 					return err
@@ -311,7 +283,7 @@ func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockCha
 	// Feed the workers
 	go func() {
 		defer close(jobsChan)
-		for b := 0; b < blocks; b++ {
+		for b := int64(0); b < blocks; b++ {
 			select { // Note: NOT a switch statement!
 			case jobsChan <- b: // This happens if a worker is free to be fed an epoch ID
 			case <-ctx.Done(): // This happens if a worker returned an err
@@ -358,10 +330,10 @@ func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockCha
 const MAX_PHASE_PEAKS = 1000
 const CSV_COLUMNS = 3
 
-func ParallelSimulateCompressionWithKMeans(amounts []int64,
-	blocksPerEpoch int,
-	blocksPerMicroEpoch int,
-	blockToTxo []int64,
+func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain, handles chainreadinterface.IHandleCreator,
+	blocksPerEpoch int64,
+	blocksPerMicroEpoch int64,
+	blocks int64,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	expCodes map[int64]huffman.BitCode,
 	residualCodesByExp []map[int64]huffman.BitCode,
@@ -371,15 +343,14 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 
 	completed := int64(0) // Atomic int
 
-	blocks := len(blockToTxo)
-	microEpochs := blocks/blocksPerMicroEpoch + 1
+	microEpochs := blocks/int64(blocksPerMicroEpoch) + 1
 
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 4 {
 		numWorkers -= 2
 	} // Leave some free for OS
 
-	jobs := make(chan int, 100)
+	jobsChan := make(chan int64, 100)
 	type workerResult struct {
 		stats         CompressionStats
 		peakStrengths [][CSV_COLUMNS]int64
@@ -387,119 +358,157 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 	resultsChan := make(chan workerResult, numWorkers)
 	var wg sync.WaitGroup
 
+	// Create an errgroup and a context
+	g, ctx := errgroup.WithContext(context.Background())
+
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go func() {
+		g.Go(func() error { // Use the errgroup instead of "go func() {"
 			defer wg.Done()
 			local := workerResult{
 				peakStrengths: make([][CSV_COLUMNS]int64, microEpochs),
 			}
 
-			for blockIdx := range jobs {
+			for blockIdx := range jobsChan {
+				// Check if another worker already failed
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+
 				epochID := blockIdx / blocksPerEpoch
 				microEpochID := blockIdx / blocksPerMicroEpoch
-				firstTxo := blockToTxo[blockIdx]
-				lastTxo := int64(len(amounts)) // Rare fallback
-				if blockIdx+1 < blocks {       // Usual case
-					lastTxo = blockToTxo[blockIdx+1]
+
+				blockHandle, err := handles.BlockHandleByHeight(int64(blockIdx))
+				if err != nil {
+					return err
 				}
-
-				for txo := firstTxo; txo < lastTxo; txo++ {
-					amount := amounts[txo]
-
-					// Stage 1: Celebrity cost (cost of MAXINT means celebrity status not available)
-					// Intended to capture common numbers of satoshis like 50BTC and 0 sats
-					// The celebrity codes are now PER EPOCH
-					celebCost := math.MaxInt
-					if aCode, ok := epochToCelebCodes[epochID][amount]; ok {
-						celebCost = aCode.Length
+				block, err := chain.BlockInterface(blockHandle)
+				if err != nil {
+					return err
+				}
+				tCount, err := block.TransactionCount()
+				if err != nil {
+					return err
+				}
+				for t := int64(0); t < tCount; t++ {
+					transHandle, err := block.NthTransaction(t)
+					if err != nil {
+						return err
 					}
+					trans, err := chain.TransInterface(transHandle)
+					if err != nil {
+						return err
+					}
+					txoAmounts, err := trans.AllTxoSatoshis()
+					if err != nil {
+						return err
+					}
+					for _, sats := range txoAmounts {
+						amount := sats
+						// END new iteration code
 
-					// Stage 2: Ghost cost (maxint means ghost status not available)
-					// Intended to capture the "ghosts" of round numbers in fiat-land, when they are converted to satoshis
-					ghostCost := math.MaxInt
-					// Amount 0 will trigger a log10(0) and things will go wrong. But we know amount 0 will be treated as a celeb or literal so we're not interested in the "ghost" cost of a zero
-					if amount > 0 && microEpochToPhasePeaks[microEpochID] != nil && len(microEpochToPhasePeaks[microEpochID]) > 0 {
-						e, peakIdx, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
-						if rCode, ok := residualCodesByExp[e][r]; ok {
-							//ghostCost = 3                           // Firstly there is a 3 bit cost to select which of the 7 stored peaks (for this epoch) we're near
-							//ghostCost += 2                          // And some bits to store the harmonic
-							// Now we have a huffman code for the combination of peak index and harmonic index.
-							// This is the initial cost...
-							ghostCost = combinedCodes[int64(3*peakIdx+harmonic)].Length
-							if peakIdx < CSV_COLUMNS {
-								local.peakStrengths[epochID][peakIdx]++ // Yes this IS supposed to be here. It's for oracle price prediction
-							}
-							if eCode, ok := expCodes[int64(e)]; ok {
-								ghostCost += eCode.Length // Secondly there are some bits to encode the number of decimal points (exp)
-							} else {
-								panic("missing exp code")
-							}
-							ghostCost += rCode.Length // Thirdly there are some bits to encode the residual distance from the peak
+						// Stage 1: Celebrity cost (cost of MAXINT means celebrity status not available)
+						// Intended to capture common numbers of satoshis like 50BTC and 0 sats
+						// The celebrity codes are now PER EPOCH
+						celebCost := math.MaxInt
+						if aCode, ok := epochToCelebCodes[epochID][amount]; ok {
+							celebCost = aCode.Length
 						}
+
+						// Stage 2: Ghost cost (maxint means ghost status not available)
+						// Intended to capture the "ghosts" of round numbers in fiat-land, when they are converted to satoshis
+						ghostCost := math.MaxInt
+						// Amount 0 will trigger a log10(0) and things will go wrong. But we know amount 0 will be treated as a celeb or literal so we're not interested in the "ghost" cost of a zero
+						if amount > 0 && microEpochToPhasePeaks[microEpochID] != nil && len(microEpochToPhasePeaks[microEpochID]) > 0 {
+							e, peakIdx, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
+							if rCode, ok := residualCodesByExp[e][r]; ok {
+								//ghostCost = 3                           // Firstly there is a 3 bit cost to select which of the 7 stored peaks (for this epoch) we're near
+								//ghostCost += 2                          // And some bits to store the harmonic
+								// Now we have a huffman code for the combination of peak index and harmonic index.
+								// This is the initial cost...
+								ghostCost = combinedCodes[int64(3*peakIdx+harmonic)].Length
+								if peakIdx < CSV_COLUMNS {
+									local.peakStrengths[epochID][peakIdx]++ // Yes this IS supposed to be here. It's for oracle price prediction
+								}
+								if eCode, ok := expCodes[int64(e)]; ok {
+									ghostCost += eCode.Length // Secondly there are some bits to encode the number of decimal points (exp)
+								} else {
+									panic("missing exp code")
+								}
+								ghostCost += rCode.Length // Thirdly there are some bits to encode the residual distance from the peak
+							}
+						}
+
+						// Stage 3: Magnitude-encoded Literal cost. Always available.
+						mag := int64(bits.Len64(uint64(amount))) // Number of bits in the literal (after the binary 0's)
+						// COULD BE 0 BITS! BE AWARE!
+						// One bit saving is clever. Because we can assume "0" is a celebrity (in fact we found that
+						// it's the most popular celebrity!), we know that amount is non zero. So we don't need
+						// to store mag bits, because we ALWAYS ALREADY KNOW that the first bit will be a 1. Why store it?
+						const oneBitSaving = 1
+						literalCost := magnitudeCodes[mag].Length // A huffman code telling us the magnitude (number of bits)
+						if mag > 0 {
+							literalCost += int(mag) - oneBitSaving // The bits themselves (minus the clever one bit saving)
+						} else {
+							// The magnitude is zero. The number is zero bits long. The NUMBER IS ZERO. There are no bits
+							literalCost += 0
+						}
+
+						selectorCost := 2 // Two bits to select between (00) Literal, (01) Celebrity, (10) Ghost, and (11) That which is prophesied ;-)
+						// Choose whichever is cheapest
+						choice := 0
+						chosenCost := literalCost
+						if celebCost < chosenCost {
+							choice = 1
+							chosenCost = celebCost
+						}
+						if ghostCost < chosenCost {
+							choice = 2
+							chosenCost = ghostCost
+						}
+						cost := selectorCost + chosenCost
+
+						if choice == 0 {
+							local.stats.LiteralHits++
+						} else if choice == 1 {
+							local.stats.CelebrityHits++
+						} else if choice == 2 {
+							local.stats.KMeansHits++
+						}
+
+						if cost > 200 {
+							// That's just silly.
+							cost = 64 // Fallback to let the simulation continue
+						}
+
+						local.stats.TotalBits += uint64(cost)
 					}
 
-					// Stage 3: Magnitude-encoded Literal cost. Always available.
-					mag := int64(bits.Len64(uint64(amount))) // Number of bits in the literal (after the binary 0's)
-					// COULD BE 0 BITS! BE AWARE!
-					// One bit saving is clever. Because we can assume "0" is a celebrity (in fact we found that
-					// it's the most popular celebrity!), we know that amount is non zero. So we don't need
-					// to store mag bits, because we ALWAYS ALREADY KNOW that the first bit will be a 1. Why store it?
-					const oneBitSaving = 1
-					literalCost := magnitudeCodes[mag].Length // A huffman code telling us the magnitude (number of bits)
-					if mag > 0 {
-						literalCost += int(mag) - oneBitSaving // The bits themselves (minus the clever one bit saving)
-					} else {
-						// The magnitude is zero. The number is zero bits long. The NUMBER IS ZERO. There are no bits
-						literalCost += 0
+					// Report progress on completion
+					done := atomic.AddInt64(&completed, 1)
+					if done%1000 == 0 || done == int64(blocks) {
+						fmt.Printf("\r> Progress: [%d/%d] blocks (%.1f%%)    ",
+							done, blocks, float64(done)/float64(blocks)*100)
 					}
-
-					selectorCost := 2 // Two bits to select between (00) Literal, (01) Celebrity, (10) Ghost, and (11) That which is prophesied ;-)
-					// Choose whichever is cheapest
-					choice := 0
-					chosenCost := literalCost
-					if celebCost < chosenCost {
-						choice = 1
-						chosenCost = celebCost
-					}
-					if ghostCost < chosenCost {
-						choice = 2
-						chosenCost = ghostCost
-					}
-					cost := selectorCost + chosenCost
-
-					if choice == 0 {
-						local.stats.LiteralHits++
-					} else if choice == 1 {
-						local.stats.CelebrityHits++
-					} else if choice == 2 {
-						local.stats.KMeansHits++
-					}
-
-					if cost > 200 {
-						// That's just silly.
-						cost = 64 // Fallback to let the simulation continue
-					}
-
-					local.stats.TotalBits += uint64(cost)
-				}
-
-				// Report progress on completion
-				done := atomic.AddInt64(&completed, 1)
-				if done%1000 == 0 || done == int64(blocks) {
-					fmt.Printf("\r> Progress: [%d/%d] blocks (%.1f%%)    ",
-						done, blocks, float64(done)/float64(blocks)*100)
 				}
 			}
 			resultsChan <- local
-		}()
+			return nil
+		})
 	}
+	go func() {
+		defer close(jobsChan)
+		for b := int64(0); b < blocks; b++ {
+			select { // Note: NOT a switch statement!
+			case jobsChan <- b: // This happens if a worker is free to be fed an epoch ID
+			case <-ctx.Done(): // This happens if a worker returned an err
+				return
+			}
+		}
+	}()
 
-	// Dispatcher
-	for b := 0; b < blocks; b++ {
-		jobs <- b
-	}
-	close(jobs)
 	wg.Wait()
 	close(resultsChan)
 	fmt.Printf("\nDone that now\n")
@@ -513,7 +522,7 @@ func ParallelSimulateCompressionWithKMeans(amounts []int64,
 		globalStats.KMeansHits += res.stats.KMeansHits
 		globalStats.LiteralHits += res.stats.LiteralHits
 
-		for me := 0; me < microEpochs; me++ {
+		for me := int64(0); me < microEpochs; me++ {
 			for p := 0; p < CSV_COLUMNS; p++ {
 				globalStrengths[me][p] += res.peakStrengths[me][p]
 			}

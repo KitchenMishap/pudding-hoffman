@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"encoding/csv"
-	"errors"
 	"fmt"
 	"github.com/KitchenMishap/pudding-huffman/blockchain"
 	"github.com/KitchenMishap/pudding-huffman/compress"
@@ -135,64 +134,9 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	fmt.Printf("The last block height is: %d\n", latestBlock.Height())
 
 	blocks := latestBlock.Height() + 1
-	blockToTxo := make([]int64, blocks)
 
-	fmt.Printf("Gathering tx info for each block...\n")
-	blockHeight := int64(0)
-	blockHandle := chain.GenesisBlock()
-	for {
-		if blockHeight%100000 == 0 {
-			fmt.Printf("Block: %d\n", blockHeight)
-		}
-		block, err := chain.BlockInterface(blockHandle)
-		if err != nil {
-			return err
-		}
-		transHandle, err := block.NthTransaction(0)
-		if err != nil {
-			return err
-		}
-		trans, err := chain.TransInterface(transHandle)
-		if err != nil {
-			return err
-		}
-		txoHandle, err := trans.NthTxo(0)
-		if err != nil {
-			return err
-		}
-		if !txoHandle.TxoHeightSpecified() {
-			return errors.New("txo height not specified by handle")
-		}
-		blockToTxo[blockHeight] = txoHandle.TxoHeight()
-
-		blockHeight++
-		if blockHeight == blocks {
-			break
-		}
-		blockHandle, err = chain.NextBlock(blockHandle)
-	}
-	numTxos := blockToTxo[blocks-1]
 	p := message.NewPrinter(language.English) // For commas between thousands
-	p.Printf("There are: %d txos in the first %d blocks\n", numTxos, blocks)
-
-	fmt.Printf("Gathering the amounts (big file read coming...)\n")
-	satsFile := reader.Privileged().TxoSatsFile()
-
-	amountsCount, err := satsFile.CountWords()
-	if err != nil {
-		return err
-	}
-	amounts := make([]int64, amountsCount)
-	for i := int64(0); i < amountsCount; i++ {
-		amounts[i], err = satsFile.ReadWordAt(i)
-		if err != nil {
-			return err
-		}
-		if i%1000000 == 0 {
-			fmt.Printf("\r%.1f%%   ", float64(100*i)/float64(amountsCount))
-		}
-	}
-	fmt.Printf("\nGathering the amounts (...finished file read)\n")
+	p.Printf("There are: ??? in the first %d blocks\n", blocks)
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Creating the celebrity histograms per epoch **==")
@@ -373,7 +317,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression **==")
-	result, magFreqs, expFreqs, err := compress.ParallelAmountStatistics(chain, handles, blocksPerEpoch, blockToTxo, epochToCelebCodes, MAX_BASE_10_EXP)
+	result, magFreqs, expFreqs, err := compress.ParallelAmountStatistics(chain, handles, blocks, blocksPerEpoch, epochToCelebCodes, MAX_BASE_10_EXP)
 	if err != nil {
 		return err
 	}
@@ -385,7 +329,11 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Identifying fiat peaks (parallel) **==")
 
 	microEpochs := blocks/blocksPerMicroEpoch + 1
-	microEpochToPhasePeaks := kmeans.ParallelKMeans(amounts, blockToTxo, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch, deterministic)
+	microEpochToPhasePeaks, err := kmeans.ParallelKMeans(chain, handles, blocks, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch, deterministic)
+	if err != nil {
+		return err
+	}
+
 	for meID := 0; meID < int(microEpochs); meID++ {
 		// Sort the peaks for this epoch so Peak 0 is always the smallest phase
 		sort.Float64s(microEpochToPhasePeaks[meID])
@@ -394,7 +342,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Build residuals map (now parallel, now per EXP) **==")
 
-	residualsMapByExp, combinedFreq := compress.ParallelGatherResidualFrequenciesByExp10(chain, handles, blocksPerEpoch, blocksPerMicroEpoch, blockToTxo, epochToCelebCodes, microEpochToPhasePeaks, MAX_BASE_10_EXP)
+	residualsMapByExp, combinedFreq := compress.ParallelGatherResidualFrequenciesByExp10(chain, handles, blocksPerEpoch, blocksPerMicroEpoch, blocks, epochToCelebCodes, microEpochToPhasePeaks, MAX_BASE_10_EXP)
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** More Huffman stuff **==")
@@ -456,7 +404,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression with fiat peaks **==")
 
-	result, microEpochToPeakStrengths := compress.ParallelSimulateCompressionWithKMeans(amounts, blocksPerEpoch, blocksPerMicroEpoch, blockToTxo, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, microEpochToPhasePeaks)
+	result, microEpochToPeakStrengths := compress.ParallelSimulateCompressionWithKMeans(chain, handles, blocksPerEpoch, blocksPerMicroEpoch, blocks, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, microEpochToPhasePeaks)
 
 	p = message.NewPrinter(language.English) // For commas between thousands
 	p.Printf("TotalBits: %d\n", result.TotalBits)
