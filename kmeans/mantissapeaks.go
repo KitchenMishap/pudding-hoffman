@@ -504,7 +504,7 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 			// Go through the microEpochs in this epoch
 			firstMe := epochID * microEpochsPerEpoch
 			for me := firstMe; me < firstMe+microEpochsPerEpoch; me++ {
-				firstBlock := epochID*blocksPerEpoch + me*blocksPerMicroEpoch
+				firstBlock := epochID*blocksPerEpoch + (me-firstMe)*blocksPerMicroEpoch
 				if firstBlock >= blocks {
 					break
 				}

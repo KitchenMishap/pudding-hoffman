@@ -485,13 +485,12 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 
 						local.stats.TotalBits += uint64(cost)
 					}
-
-					// Report progress on completion
-					done := atomic.AddInt64(&completed, 1)
-					if done%1000 == 0 || done == int64(blocks) {
-						fmt.Printf("\r> Progress: [%d/%d] blocks (%.1f%%)    ",
-							done, blocks, float64(done)/float64(blocks)*100)
-					}
+				}
+				// Report progress on completion
+				done := atomic.AddInt64(&completed, 1)
+				if done%1000 == 0 || done == int64(blocks) {
+					fmt.Printf("\r> Progress: [%d/%d] blocks (%.1f%%)    ",
+						done, blocks, float64(done)/float64(blocks)*100)
 				}
 			}
 			resultsChan <- local
