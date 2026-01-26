@@ -2,6 +2,7 @@ package kmeans
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/KitchenMishap/pudding-huffman/huffman"
 	"github.com/KitchenMishap/pudding-shed/chainreadinterface"
@@ -541,14 +542,24 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 							return err
 						}
 						buffer = buffer[:0] // Reset buffer but keep allocated memory
+						// For the thinning below to match the "old" code, in which txo indexed all the txo's
+						// in the entire chain, we'll need to know the firstTxo of the transaction
+						txoHandle, err := trans.NthTxo(0)
+						if err != nil {
+							return err
+						}
+						if !txoHandle.TxoHeightSpecified() {
+							return errors.New("txo height not specified")
+						}
+						firstTxoOfTrans := txoHandle.TxoHeight()
 
 						for txo, sats := range txoAmounts {
 							amount := sats
-
+							oldCodeTxoIndex := firstTxoOfTrans + int64(txo)
 							if _, ok := celebCodesPerEpoch[epochID][amount]; !ok {
 								// Only if NOT a celeb
 								// And thin it down
-								if txo < 1000 || txo%10 == 0 {
+								if oldCodeTxoIndex < 1000 || oldCodeTxoIndex%10 == 0 {
 									buffer = append(buffer, amount)
 								}
 							}
