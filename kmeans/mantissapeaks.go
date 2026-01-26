@@ -26,13 +26,14 @@ func FindEpochPeaksMain(amounts []int64, deterministic *rand.Rand) []float64 {
 		}
 	}
 
-	fivePeaks := findEpochPeaks(amounts, 5, deterministic)
-	if len(fivePeaks) < 5 {
+	n := 4
+	nPeaks := findEpochPeaks(amounts, n, deterministic)
+	if len(nPeaks) < n {
 		return nil
 	}
-	bestPeak := fivePeaks[0]
+	bestPeak := nPeaks[0]
 	_, bestBadness := FindBestAnchor(phases, bestPeak)
-	for _, peak := range fivePeaks {
+	for _, peak := range nPeaks {
 		peak, badness := FindBestAnchor(phases, peak)
 		if badness < bestBadness {
 			bestBadness = badness
@@ -76,7 +77,7 @@ func FindBestAnchor(phases []float64, initialPeak float64) (bestAnchor float64, 
 
 func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (float64, float64) {
 	const guffThreshold = 0.05
-	const iterations = 5
+	const iterations = 4
 	currentAnchor := startAnchor
 
 	for iter := 0; iter < iterations; iter++ {
@@ -179,7 +180,7 @@ func findEpochPeaks(amounts []int64, k int, deterministic *rand.Rand) []float64 
 
 	result := make([]float64, 0)
 	bestBadness := math.MaxFloat64
-	for try := 0; try < 5; try++ {
+	for try := 0; try < 4; try++ {
 		guess, badness := guessEpochPeaksClock(amounts, k, deterministic)
 		if badness < bestBadness {
 			bestBadness = badness
@@ -215,7 +216,7 @@ func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (log
 
 	logCentroids = initializeCentroids(phases, k, deterministic)
 
-	for i := 0; i < 10; i++ { // 10 iterations is usually enough for 1D
+	for i := 0; i < 8; i++ { // 10 iterations is usually enough for 1D
 		clusters := make([][]float64, k)
 
 		// 2. Assign to nearest centroid

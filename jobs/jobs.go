@@ -393,7 +393,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** More Huffman stuff **==")
 
 	fmt.Printf("Huffman tree for combined peak and harmonic selection\n")
-	combinedTruncated, reason := TruncateMapWithEscapeCode(combinedFreq, 24, 1.0, ESCAPE_VALUE)
+	combinedTruncated, reason := TruncateMapWithEscapeCode(combinedFreq, 124, 1.0, ESCAPE_VALUE)
 	huffCombinedRoot := huffman.BuildHuffmanTree(combinedTruncated)
 	combinedCodes := make(map[int64]huffman.BitCode)
 	huffman.GenerateBitCodes(huffCombinedRoot, 0, 0, combinedCodes)
@@ -456,7 +456,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	p.Printf("BTC Celebrity hits: %d\n", result.CelebrityHits)
 	p.Printf("Fiat Ghost hits: %d\n", result.KMeansHits)
 	p.Printf("Literal hits: %d\n", result.LiteralHits)
-
+	p.Printf("Rest hits: %d\n", result.RestHits)
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Finished **==")
 

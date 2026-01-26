@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"math"
 	"math/bits"
+	"math/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ type CompressionStats struct {
 	CelebrityHits uint64
 	KMeansHits    uint64
 	LiteralHits   uint64
+	RestHits      uint64
 }
 
 func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
@@ -397,6 +399,10 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 					return err
 				}
 				for t := int64(0); t < tCount; t++ {
+					outputsAndFeesAmounts := make([]int64, 0, 100)
+					fees := rand.Intn(1000) + 1000 // Just a simulation for now... ToDo
+					outputsAndFeesAmounts = append(outputsAndFeesAmounts, int64(fees))
+
 					transHandle, err := block.NthTransaction(t)
 					if err != nil {
 						return err
@@ -411,19 +417,25 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 					}
 					for _, sats := range txoAmounts {
 						amount := sats
-						// END new iteration code
+						outputsAndFeesAmounts = append(outputsAndFeesAmounts, amount)
+					}
 
+					// We have all the outputs and the fees for the transaction
+					// Work out the bit cost for every one of these (BEFORE we choose which is most bit-expensive)
+					outputsAndFeesBitcosts := make([]int64, len(outputsAndFeesAmounts))
+					outputsAndFeesEncodingChoice := make([]int64, len(outputsAndFeesAmounts))
+					for c, amount := range outputsAndFeesAmounts {
 						// Stage 1: Celebrity cost (cost of MAXINT means celebrity status not available)
 						// Intended to capture common numbers of satoshis like 50BTC and 0 sats
 						// The celebrity codes are now PER EPOCH
-						celebCost := math.MaxInt
+						celebCost := int64(math.MaxInt)
 						if aCode, ok := epochToCelebCodes[epochID][amount]; ok {
-							celebCost = aCode.Length
+							celebCost = int64(aCode.Length)
 						}
 
 						// Stage 2: Ghost cost (maxint means ghost status not available)
 						// Intended to capture the "ghosts" of round numbers in fiat-land, when they are converted to satoshis
-						ghostCost := math.MaxInt
+						ghostCost := int64(math.MaxInt)
 						// Amount 0 will trigger a log10(0) and things will go wrong. But we know amount 0 will be treated as a celeb or literal so we're not interested in the "ghost" cost of a zero
 						if amount > 0 && microEpochToPhasePeaks[microEpochID] != nil && len(microEpochToPhasePeaks[microEpochID]) > 0 {
 							e, peakIdx, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
@@ -432,16 +444,16 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 								//ghostCost += 2                          // And some bits to store the harmonic
 								// Now we have a huffman code for the combination of peak index and harmonic index.
 								// This is the initial cost...
-								ghostCost = combinedCodes[int64(3*peakIdx+harmonic)].Length
+								ghostCost = int64(combinedCodes[int64(3*peakIdx+harmonic)].Length)
 								if peakIdx < CSV_COLUMNS {
 									local.peakStrengths[epochID][peakIdx]++ // Yes this IS supposed to be here. It's for oracle price prediction
 								}
 								if eCode, ok := expCodes[int64(e)]; ok {
-									ghostCost += eCode.Length // Secondly there are some bits to encode the number of decimal points (exp)
+									ghostCost += int64(eCode.Length) // Secondly there are some bits to encode the number of decimal points (exp)
 								} else {
 									panic("missing exp code")
 								}
-								ghostCost += rCode.Length // Thirdly there are some bits to encode the residual distance from the peak
+								ghostCost += int64(rCode.Length) // Thirdly there are some bits to encode the residual distance from the peak
 							}
 						}
 
@@ -452,17 +464,18 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 						// it's the most popular celebrity!), we know that amount is non zero. So we don't need
 						// to store mag bits, because we ALWAYS ALREADY KNOW that the first bit will be a 1. Why store it?
 						const oneBitSaving = 1
-						literalCost := magnitudeCodes[mag].Length // A huffman code telling us the magnitude (number of bits)
+						literalCost := int64(magnitudeCodes[mag].Length) // A huffman code telling us the magnitude (number of bits)
 						if mag > 0 {
-							literalCost += int(mag) - oneBitSaving // The bits themselves (minus the clever one bit saving)
+							literalCost += int64(mag) - oneBitSaving // The bits themselves (minus the clever one bit saving)
 						} else {
 							// The magnitude is zero. The number is zero bits long. The NUMBER IS ZERO. There are no bits
 							literalCost += 0
 						}
 
-						selectorCost := 2 // Two bits to select between (00) Literal, (01) Celebrity, (10) Ghost, and (11) That which is prophesied ;-)
-						// Choose whichever is cheapest
-						choice := 0
+						selectorCost := int64(2) // Two bits to select between (00) Literal, (01) Celebrity, (10) Ghost, and (11) The "Work it out yourself" code
+
+						// Choose whichever choice of encoding is cheapest
+						choice := int64(0)
 						chosenCost := literalCost
 						if celebCost < chosenCost {
 							choice = 1
@@ -472,24 +485,43 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 							choice = 2
 							chosenCost = ghostCost
 						}
-						cost := selectorCost + chosenCost
 
-						if choice == 0 {
+						outputsAndFeesBitcosts[c] = selectorCost + chosenCost
+						outputsAndFeesEncodingChoice[c] = choice
+					}
+					// Find the most costly output (or fees) in terms of bitcount
+					mostExpensive := int64(0)
+					loser := -1
+					for c, cost := range outputsAndFeesBitcosts {
+						if cost > mostExpensive {
+							mostExpensive = cost
+							loser = c
+						}
+					}
+					outputsAndFeesBitcosts[loser] = 2       // To encode "11" code
+					outputsAndFeesEncodingChoice[loser] = 3 // 11 in accordance with the prophecy
+
+					transactionBitcount := 0
+					for c, cost := range outputsAndFeesBitcosts {
+						transactionBitcount += int(cost)
+						if outputsAndFeesEncodingChoice[c] == 0 {
 							local.stats.LiteralHits++
-						} else if choice == 1 {
+						}
+						if outputsAndFeesEncodingChoice[c] == 1 {
 							local.stats.CelebrityHits++
-						} else if choice == 2 {
+						}
+						if outputsAndFeesEncodingChoice[c] == 2 {
 							local.stats.KMeansHits++
 						}
-
-						if cost > 200 {
-							// That's just silly.
-							cost = 64 // Fallback to let the simulation continue
+						if outputsAndFeesEncodingChoice[c] == 3 {
+							local.stats.RestHits++
 						}
-
-						local.stats.TotalBits += uint64(cost)
 					}
-				}
+
+					local.stats.TotalBits += uint64(transactionBitcount)
+
+				} // For transactions
+
 				// Report progress on completion
 				done := atomic.AddInt64(&completed, 1)
 				if done%1000 == 0 || done == int64(blocks) {
@@ -524,6 +556,7 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 		globalStats.CelebrityHits += res.stats.CelebrityHits
 		globalStats.KMeansHits += res.stats.KMeansHits
 		globalStats.LiteralHits += res.stats.LiteralHits
+		globalStats.RestHits += res.stats.RestHits
 
 		for me := int64(0); me < microEpochs; me++ {
 			for p := 0; p < CSV_COLUMNS; p++ {
