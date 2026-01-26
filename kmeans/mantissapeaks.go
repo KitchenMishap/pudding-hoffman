@@ -46,10 +46,9 @@ func FindEpochPeaksMain(amounts []int64, deterministic *rand.Rand) []float64 {
 		result = append(result, math.Mod(bestPeak+math.Log10(i), 1))
 	}
 
-	// OR... Just the plain 1,2,5
-	//result = append(result, math.Mod(betterFundamental+math.Log10(1), 1))
-	//result = append(result, math.Mod(betterFundamental+math.Log10(2), 1))
-	//result = append(result, math.Mod(betterFundamental+math.Log10(5), 1))
+	//result = append(result, math.Mod(bestPeak+math.Log10(1), 1))
+	//result = append(result, math.Mod(bestPeak+math.Log10(2), 1))
+	//result = append(result, math.Mod(bestPeak+math.Log10(5), 1))
 
 	return result
 }
@@ -84,7 +83,10 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 		var totalTorque float64
 		var validHits float64
 
-		for _, p := range phases {
+		for i, p := range phases {
+			if i%1000 == 0 {
+				runtime.Gosched()
+			} //...and breathe
 			bestError := 1.0 // Initialize with max possible
 
 			for _, spokeOffset := range spokes {
@@ -117,13 +119,19 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 		if validHits > 0 {
 			// Adjust the anchor by the average torque (the M-step)
 			currentAnchor = math.Mod(currentAnchor+(totalTorque/validHits)+1.0, 1.0)
+			if math.IsNaN(currentAnchor) {
+				return startAnchor, math.MaxFloat64
+			}
 		}
 	}
 
 	// Final Pass: Calculate "Badness"
 	var totalSqError float64
 	var hits float64
-	for _, p := range phases {
+	for i, p := range phases {
+		if i%1000 == 0 {
+			runtime.Gosched()
+		} //...and breathe
 		bestError := 1.0 // Initialize with max possible
 		for _, spokeOffset := range spokes {
 			// Calculate where this specific spoke is on the clock
@@ -212,7 +220,10 @@ func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (log
 
 		// 2. Assign to nearest centroid
 		badnessScore = float64(0)
-		for _, val := range phases {
+		for i, val := range phases {
+			if i%1000 == 0 {
+				runtime.Gosched()
+			} //...and breathe
 			best := 0
 			minDist := cyclicDistance(val, logCentroids[0])
 			for j := 1; j < k; j++ {
@@ -229,7 +240,11 @@ func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (log
 		// 3. Update centroids using a "circular median" or mean
 		for j := 0; j < k; j++ {
 			if len(clusters[j]) > 0 {
-				logCentroids[j] = circularMean(clusters[j])
+				if len(clusters[j]) > 2 {
+					logCentroids[j] = circularMean(clusters[j])
+				} else {
+					logCentroids[j] = rand.Float64() // Give it a kick
+				}
 			}
 		}
 		// badnessScore is one iteration out of date, but let's not get too picky!
@@ -258,7 +273,10 @@ func guessEpochPeaksClock125(amounts []int64, k int, deterministic *rand.Rand) (
 		clusters := make([][]float64, k)
 		badnessScore = 0
 
-		for _, val := range phases {
+		for i, val := range phases {
+			if i%1000 == 0 {
+				runtime.Gosched()
+			} //...and breathe
 			bestCentroidIdx := 0
 			minDist := 2.0 // Sentinel
 
@@ -373,13 +391,21 @@ func circularMean(phases []float64) float64 {
 	}
 
 	var sumSin, sumCos float64
-	for _, p := range phases {
+	for i, p := range phases {
+		if i%1000 == 0 {
+			runtime.Gosched()
+		} //...and breathe
 		// 1. Convert phase (0..1) to radians (0..2π)
 		angle := p * 2.0 * math.Pi
 
 		// 2. Sum the Cartesian coordinates
 		sumSin += math.Sin(angle)
 		sumCos += math.Cos(angle)
+	}
+
+	// Safety check
+	if math.Abs(sumSin) < 1e-9 && math.Abs(sumCos) < 1e-9 {
+		return phases[0] // Just pick the first point to break the symmetry
 	}
 
 	// 3. Use Atan2 to find the angle of the average vector
@@ -612,7 +638,7 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 							if _, ok := celebCodesPerEpoch[epochID][amount]; !ok {
 								// Only if NOT a celeb
 								// And thin it down
-								if oldCodeTxoIndex-firstTxoOfMe < 1000 || oldCodeTxoIndex%10 == 0 {
+								if oldCodeTxoIndex-firstTxoOfMe < 1000 || oldCodeTxoIndex%20 == 0 {
 									buffer = append(buffer, amount)
 								}
 							}
