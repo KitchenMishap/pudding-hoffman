@@ -36,10 +36,12 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 
 	fmt.Printf("Parallel phase...\n")
 
-	numWorkers := runtime.NumCPU()
-	if numWorkers > 4 {
-		numWorkers -= 2
-	} // Leave some free for OS
+	workersDivider := 1
+	numWorkers := runtime.NumCPU() / workersDivider
+	if numWorkers > 8 {
+		numWorkers -= 4 // Save some for OS
+	}
+	//numWorkers = 1 // Serial test! I may be some time
 
 	// Channels for distribution and collection
 	jobsChan := make(chan int64, 100) // Block numbers get squirted into here
@@ -182,10 +184,12 @@ func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockCha
 
 	fmt.Printf("Parallel phase...\n")
 
-	numWorkers := runtime.NumCPU()
-	if numWorkers > 4 {
-		numWorkers -= 2
-	} // Leave some free for OS
+	workersDivider := 1
+	numWorkers := runtime.NumCPU() / workersDivider
+	if numWorkers > 8 {
+		numWorkers -= 4 // Save some for OS
+	}
+	//numWorkers = 1 // Serial test! I may be some time
 
 	// Channels for distribution and collection
 	jobsChan := make(chan int64, 100) // Block numbers get squirted into here
@@ -352,10 +356,12 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 
 	microEpochs := bucketCount(blocks, blocksPerMicroEpoch)
 
-	numWorkers := runtime.NumCPU()
-	if numWorkers > 4 {
-		numWorkers -= 2
-	} // Leave some free for OS
+	workersDivider := 1
+	numWorkers := runtime.NumCPU() / workersDivider
+	if numWorkers > 8 {
+		numWorkers -= 4 // Save some for OS
+	}
+	//numWorkers = 1 // Serial test! I may be some time
 
 	jobsChan := make(chan int64, 100)
 	type workerResult struct {

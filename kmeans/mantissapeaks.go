@@ -516,9 +516,11 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 	var completed int64 // atomic counter
 
 	// Use a semaphore to limit concurrency to CPU count
-	numWorkers := runtime.NumCPU()
-	if numWorkers > 4 {
-		numWorkers -= 2 // Save some for OS
+
+	workersDivider := 1
+	numWorkers := runtime.NumCPU() / workersDivider
+	if numWorkers > 8 {
+		numWorkers -= 4 // Save some for OS
 	}
 	//numWorkers = 1 // Serial test! I may be some time
 
@@ -653,8 +655,8 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 									// Is it excluded? (recognized as high entropy change?)
 									exclude := transToExcludedOutput[transIndex]
 									if exclude < 255 && int64(txo) != int64(exclude) {
-										// Full pelt different thinning
-										if oldCodeTxoIndex-firstTxoOfMe < 1000 || oldCodeTxoIndex%10 == 0 {
+										// Full pelt potentially different thinning
+										if oldCodeTxoIndex-firstTxoOfMe < 1000 || oldCodeTxoIndex%20 == 0 {
 											buffer = append(buffer, amount)
 										}
 									}
