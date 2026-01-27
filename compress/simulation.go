@@ -2,6 +2,7 @@ package compress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/KitchenMishap/pudding-huffman/huffman"
 	"github.com/KitchenMishap/pudding-huffman/kmeans"
@@ -345,7 +346,7 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 	residualCodesByExp []map[int64]huffman.BitCode,
 	magnitudeCodes map[int64]huffman.BitCode,
 	combinedCodes map[int64]huffman.BitCode,
-	microEpochToPhasePeaks [][]float64) (CompressionStats, [][CSV_COLUMNS]int64) {
+	microEpochToPhasePeaks [][]float64) (CompressionStats, [][CSV_COLUMNS]int64, *[2000000000]byte) {
 
 	completed := int64(0) // Atomic int
 
@@ -366,6 +367,8 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 
 	// Create an errgroup and a context
 	g, ctx := errgroup.WithContext(context.Background())
+
+	transToExcludedOutput := [2000000000]byte{}
 
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
@@ -407,6 +410,11 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 					if err != nil {
 						return err
 					}
+					if !transHandle.HeightSpecified() {
+						return errors.New("transaction height not specified")
+					}
+					transIndex := transHandle.Height()
+					transToExcludedOutput[transIndex] = 255 // Unitl we find an actual output to be excluded
 					trans, err := chain.TransInterface(transHandle)
 					if err != nil {
 						return err
@@ -515,6 +523,10 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 						}
 						if outputsAndFeesEncodingChoice[c] == 3 {
 							local.stats.RestHits++
+							if c > 0 && c-1 < 255 {
+								// Not fees. Make a note to exclude from next kmeans run
+								transToExcludedOutput[transIndex] = byte(c - 1)
+							}
 						}
 					}
 
@@ -565,5 +577,5 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 		}
 	}
 
-	return globalStats, globalStrengths
+	return globalStats, globalStrengths, &transToExcludedOutput
 }

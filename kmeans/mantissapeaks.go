@@ -498,7 +498,8 @@ func bucketCount(beans int64, beansPerBucket int64) int64 {
 }
 
 func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinterface.IHandleCreator, blocks int64, blocksPerMicroEpoch int64,
-	celebCodesPerEpoch []map[int64]huffman.BitCode, blocksPerEpoch int64, deterministic *rand.Rand) ([][]float64, error) {
+	celebCodesPerEpoch []map[int64]huffman.BitCode, blocksPerEpoch int64, deterministic *rand.Rand,
+	transToExcludedOutput *[2000000000]byte) ([][]float64, error) {
 
 	fmt.Printf("Parallel peak detection by micro-epoch...\n")
 	fmt.Printf("Caller tells me there are %d blocks (should be 888,888)\n", blocks)
@@ -610,6 +611,10 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 					for t := int64(0); t < tCount; t++ {
 						atomic.AddInt64(&transactionsInChain, 1)
 						transHandle, err := block.NthTransaction(t)
+						if !transHandle.HeightSpecified() {
+							return errors.New("transaction height not specified")
+						}
+						transIndex := transHandle.Height()
 						if err != nil {
 							return err
 						}
@@ -638,9 +643,19 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 							oldCodeTxoIndex := firstTxoOfTrans + int64(txo)
 							if _, ok := celebCodesPerEpoch[epochID][amount]; !ok {
 								// Only if NOT a celeb
-								// And thin it down
-								if oldCodeTxoIndex-firstTxoOfMe < 1000 || oldCodeTxoIndex%20 == 0 {
-									buffer = append(buffer, amount)
+								if transToExcludedOutput == nil {
+									// First pass, thin it down
+									if oldCodeTxoIndex-firstTxoOfMe < 1000 || oldCodeTxoIndex%20 == 0 {
+										buffer = append(buffer, amount)
+									}
+								} else {
+									// Second pass
+									// Is it excluded? (recognized as high entropy change?)
+									exclude := transToExcludedOutput[transIndex]
+									if exclude < 255 && int64(txo) != int64(exclude) {
+										// Full pelt full data!
+										buffer = append(buffer, amount)
+									}
 								}
 							}
 						}

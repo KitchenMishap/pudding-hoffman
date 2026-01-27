@@ -333,7 +333,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Identifying fiat peaks (parallel) **==")
 
 	microEpochs := bucketCount(blocks, blocksPerMicroEpoch)
-	microEpochToPhasePeaks, err := kmeans.ParallelKMeans(chain, handles, blocks, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch, deterministic)
+	microEpochToPhasePeaks, err := kmeans.ParallelKMeans(chain, handles, blocks, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch, deterministic, nil)
 	if err != nil {
 		return err
 	}
@@ -449,7 +449,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Simulating compression with fiat peaks **==")
 
-	result, microEpochToPeakStrengths := compress.ParallelSimulateCompressionWithKMeans(chain, handles, blocksPerEpoch, blocksPerMicroEpoch, blocks, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, microEpochToPhasePeaks)
+	result, microEpochToPeakStrengths, transToExcludedOutputs := compress.ParallelSimulateCompressionWithKMeans(chain, handles, blocksPerEpoch, blocksPerMicroEpoch, blocks, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, microEpochToPhasePeaks)
 
 	p = message.NewPrinter(language.English) // For commas between thousands
 	p.Printf("TotalBits: %d\n", result.TotalBits)
@@ -458,6 +458,31 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	p.Printf("Literal hits: %d\n", result.LiteralHits)
 	p.Printf("Rest hits: %d\n", result.RestHits)
 	elapsed = time.Since(startTime)
+
+	microEpochToPhasePeaks, err = kmeans.ParallelKMeans(chain, handles, blocks, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch, deterministic, transToExcludedOutputs)
+	if err != nil {
+		return err
+	}
+	for meID := 0; meID < int(microEpochs); meID++ {
+		hourCounter := meID
+		TimeOfDay := meID % 24
+		year := 2009 + math.Round(100.0*(float64(hourCounter)/(52.0*7.0*24.0)))/100.0
+		if len(microEpochToPhasePeaks[meID]) > 0 {
+			if TimeOfDay == 0 { // "One" timezone somewhere in the world
+				L := microEpochToPhasePeaks[meID][0]
+				val := math.Pow(10, -L)
+				for val < 1000 {
+					val *= 10
+				}
+				for val >= 10000 {
+					val /= 10
+				}
+				digits := int(val)
+				fmt.Printf("%.2f, %d\n", year, digits)
+			}
+		}
+	}
+
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Finished **==")
 
 	exportOracleCSV("Oracle.csv", microEpochToPhasePeaks, microEpochToPeakStrengths)
