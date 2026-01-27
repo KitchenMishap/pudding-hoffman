@@ -76,7 +76,8 @@ func FindBestAnchor(phases []float64, initialPeak float64) (bestAnchor float64, 
 }
 
 func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (float64, float64) {
-	const guffThreshold = 0.05
+	const guffThreshold = 0.05 // Should never be more than 0.12. If it gets to 0.15, we lose the ability to
+	// recognize the "10" of a "5-10-20" peak pattern and everything falls apart
 	const iterations = 4
 	currentAnchor := startAnchor
 
@@ -119,7 +120,8 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 
 		if validHits > 0 {
 			// Adjust the anchor by the average torque (the M-step)
-			currentAnchor = math.Mod(currentAnchor+(totalTorque/validHits)+1.0, 1.0)
+			//currentAnchor = math.Mod(currentAnchor+(totalTorque/validHits)+1.0, 1.0)
+			currentAnchor = math.Mod(currentAnchor-(totalTorque/validHits)+1.0, 1.0) // Gemini test, reverse the torque
 			if math.IsNaN(currentAnchor) {
 				return startAnchor, math.MaxFloat64
 			}
@@ -127,7 +129,7 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 	}
 
 	// Final Pass: Calculate "Badness"
-	var totalSqError float64
+	var totalAbsError float64
 	var hits float64
 	for i, p := range phases {
 		if i%1000 == 0 {
@@ -155,7 +157,8 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 		err := bestError
 
 		if err < guffThreshold {
-			totalSqError += (err * err)
+			//totalSqError += (err * err)
+			totalAbsError += math.Abs(err * err)
 			hits++
 		}
 	}
@@ -167,7 +170,7 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 
 	// Badness = Variance / CaptureRate
 	captureRate := hits / float64(len(phases))
-	badness := (totalSqError / hits) / captureRate
+	badness := (totalAbsError / hits) / (captureRate * captureRate)
 
 	return currentAnchor, badness
 }

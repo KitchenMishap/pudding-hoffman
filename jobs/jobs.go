@@ -342,10 +342,10 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 
 	var microEpochToPhasePeaks [][]float64
 	var microEpochToPeakStrengths [][3]int64
+
+	var exclude *[2000000000]byte = nil
 	for pass := 0; pass < 2; pass++ {
 		fmt.Printf("======================= Pass %d ===========", pass)
-
-		var exclude *[2000000000]byte = nil
 
 		microEpochToPhasePeaks, err := kmeans.ParallelKMeans(chain, handles, blocks, blocksPerMicroEpoch, epochToCelebCodes, blocksPerEpoch, deterministic, exclude)
 		if err != nil {
@@ -386,7 +386,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 			sort.Float64s(microEpochToPhasePeaks[meID])
 		}
 
-		if pass == 0 {
+		if true {
 			elapsed = time.Since(startTime)
 			fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Build residuals map (now parallel, now per EXP) **==")
 
