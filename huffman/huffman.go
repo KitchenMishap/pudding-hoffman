@@ -123,7 +123,7 @@ func NewPodium() *Podium {
 }
 
 func (p *Podium) Submit(code BitCode, words string) {
-	if code.Length > 8 || code.Length == 0 {
+	if code.Length > 16 || code.Length == 0 {
 		return // Disqualified from the short-code podium
 	}
 
@@ -157,7 +157,6 @@ func (p *Podium) Rank(topN int) {
 		return flat[i].Count > flat[j].Count
 	})
 
-	fmt.Printf("\n🏆 --- THE PODIUM (Top %d Fullest Buckets) ---\n", topN)
 	for i := 0; i < topN && i < len(flat); i++ {
 		fmt.Printf("[%d] Code: %-10s | Hits: %-12d | %s\n", i+1, flat[i].Code, flat[i].Count, flat[i].Words)
 	}
