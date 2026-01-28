@@ -32,9 +32,11 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 	epochToCelebCodes []map[int64]huffman.BitCode,
 	max_base_10_exp int) (CompressionStats, []int64, []int64, error) {
 
-	fmt.Printf("Stage 1: ParallelAmountStatistics()\n")
+	sJob := "Stage 1: ParallelAmountStatistics() (PARALLEL BY BLOCK)"
+	fmt.Printf("%s\n", sJob)
+	tJob := time.Now()
 
-	fmt.Printf("Parallel phase...\n")
+	blocksDone := uint64(0) // atomic int
 
 	workersDivider := 1
 	numWorkers := runtime.NumCPU() / workersDivider
@@ -73,7 +75,6 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 				default:
 				}
 
-				// Worker Logic ==START==
 				epochID := blockIdx / blocksPerEpoch
 
 				blockHandle, err := handles.BlockHandleByHeight(int64(blockIdx))
@@ -104,8 +105,6 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 					for _, sats := range txoAmounts {
 						amount := sats
 
-						// Back to existing code
-
 						// Stage 1: Celebrity
 						if _, ok := epochToCelebCodes[epochID][amount]; ok {
 							local.stats.CelebrityHits++
@@ -122,9 +121,12 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 							}
 						}
 					}
+				} // For transaction
+				done := atomic.AddUint64(&blocksDone, 1)
+				if done%10000 == 0 {
+					fmt.Printf("\rProgress: %.1f   ", float64(done*100)/float64(blocks))
 				}
-				// Worker logic ==END==
-			}
+			} // For block
 			resultsChan <- local
 			return nil
 		})
@@ -141,6 +143,7 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 			}
 		}
 	}()
+	fmt.Printf("\n")
 
 	// Wait for completion and handle the error
 	if err := g.Wait(); err != nil {
@@ -150,8 +153,14 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 	wg.Wait()
 	close(resultsChan)
 
-	fmt.Printf("Reduce phase (serial)...\n")
+	jobElapsed := time.Since(tJob)
+	fmt.Printf("%s: Job Took: [%5.1f min]\n", sJob, jobElapsed.Minutes())
+
 	// --- REDUCE PHASE ---
+	sJob = "Stage 1: ParallelAmountStatistics() (SERIAL Reduction)"
+	fmt.Printf("%s\n", sJob)
+	tJob = time.Now()
+
 	finalStats := CompressionStats{}
 	finalMags := make([]int64, 65)
 	finalExpFreqs := make([]int64, max_base_10_exp)
@@ -168,6 +177,9 @@ func ParallelAmountStatistics(chain chainreadinterface.IBlockChain,
 		}
 	}
 
+	jobElapsed = time.Since(tJob)
+	fmt.Printf("%s: Job Took: [%5.1f min]\n", sJob, jobElapsed.Minutes())
+
 	return finalStats, finalMags, finalExpFreqs, nil
 }
 
@@ -183,7 +195,6 @@ func ParallelGatherResidualFrequenciesByExp10(chain chainreadinterface.IBlockCha
 	fmt.Printf("Stage 1.5, gather frequencies of residuals by exp magnitude\n")
 
 	fmt.Printf("Parallel phase...\n")
-
 	workersDivider := 1
 	numWorkers := runtime.NumCPU() / workersDivider
 	if numWorkers > 8 {

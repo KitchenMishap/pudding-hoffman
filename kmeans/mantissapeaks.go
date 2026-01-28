@@ -13,12 +13,16 @@ import (
 	"sync/atomic"
 )
 
+// Switch between float32 and float64 here
+type KFloat = float32
+
 func FindEpochPeaksMain(amounts []int64, deterministic *rand.Rand) []float64 {
 	// 1. Map all mantissas to the 0.0 to 1.0 "Clock face"
-	phases := make([]float64, len(amounts))
+	phases := make([]KFloat, len(amounts))
 	for i, v := range amounts {
 		// log10(v) % 1 gives the position on the clock
-		_, phases[i] = math.Modf(math.Log10(float64(v)))
+		_, ph := math.Modf(math.Log10(float64(v)))
+		phases[i] = KFloat(ph)
 		if phases[i] < 0.0 {
 			phases[i] += 1.0
 		}
@@ -42,7 +46,7 @@ func FindEpochPeaksMain(amounts []int64, deterministic *rand.Rand) []float64 {
 	result := []float64{}
 	// fundamental times logs representing 1.0, 1.1, 1.2, ..., 9.9
 	for i := float64(1.00); i < 10.00; i += 0.1 {
-		result = append(result, math.Mod(bestPeak+math.Log10(i), 1))
+		result = append(result, math.Mod(float64(bestPeak)+math.Log10(i), 1))
 	}
 
 	//result = append(result, math.Mod(bestPeak+math.Log10(1), 1))
@@ -52,16 +56,16 @@ func FindEpochPeaksMain(amounts []int64, deterministic *rand.Rand) []float64 {
 	return result
 }
 
-func FindBestAnchor(phases []float64, initialPeak float64) (bestAnchor float64, score float64) {
-	spokes := []float64{0.0, 0.30103, 0.69897} // log10 of 1, 2, 5
+func FindBestAnchor(phases []KFloat, initialPeak KFloat) (bestAnchor KFloat, score KFloat) {
+	spokes := []KFloat{0.0, 0.30103, 0.69897} // log10 of 1, 2, 5
 
-	bestScore := math.MaxFloat64
-	var absoluteBest float64
+	bestScore := KFloat(math.MaxFloat32)
+	var absoluteBest KFloat
 
 	for _, shift := range spokes {
 		// Hypothesis: What if the initial peak is actually the '1', '2', or '5'?
 		// We shift the anchor so the template aligns the initial peak with that spoke.
-		testAnchor := math.Mod(initialPeak-shift+1.0, 1.0)
+		testAnchor := KFloat(math.Mod(float64(initialPeak)-float64(shift)+1.0, 1.0))
 
 		refined, currentBadness := refineAndScore(phases, testAnchor, spokes)
 
@@ -73,25 +77,25 @@ func FindBestAnchor(phases []float64, initialPeak float64) (bestAnchor float64, 
 	return absoluteBest, bestScore
 }
 
-func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (float64, float64) {
+func refineAndScore(phases []KFloat, startAnchor KFloat, spokes []KFloat) (KFloat, KFloat) {
 	const guffThreshold = 0.05 // Should never be more than 0.12. If it gets to 0.15, we lose the ability to
 	// recognize the "10" of a "5-10-20" peak pattern and everything falls apart
 	const iterations = 4
 	currentAnchor := startAnchor
 
 	for iter := 0; iter < iterations; iter++ {
-		var totalTorque float64
-		var validHits float64
+		var totalTorque KFloat
+		var validHits KFloat
 
 		for i, p := range phases {
 			if i%1000 == 0 {
 				runtime.Gosched()
 			} //...and breathe
-			bestError := 1.0 // Initialize with max possible
+			bestError := KFloat(1.0) // Initialize with max possible
 
 			for _, spokeOffset := range spokes {
 				// Calculate where this specific spoke is on the clock
-				targetPos := math.Mod(currentAnchor+spokeOffset, 1.0)
+				targetPos := KFloat(math.Mod(float64(currentAnchor+spokeOffset), 1.0))
 
 				// We need SIGNED distance: how far and in which direction?
 				// Result should be between -0.5 and 0.5
@@ -103,14 +107,14 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 					diff += 1.0
 				}
 
-				if math.Abs(diff) < math.Abs(bestError) {
+				if math.Abs(float64(diff)) < math.Abs(float64(bestError)) {
 					bestError = diff
 				}
 			}
 
 			// Only let "near misses" pull the template.
 			// This ignores the 'guff' between the 2 and 5 spokes.
-			if math.Abs(bestError) < guffThreshold {
+			if math.Abs(float64(bestError)) < guffThreshold {
 				totalTorque += bestError
 				validHits++
 			}
@@ -119,24 +123,24 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 		if validHits > 0 {
 			// Adjust the anchor by the average torque (the M-step)
 			//currentAnchor = math.Mod(currentAnchor+(totalTorque/validHits)+1.0, 1.0)
-			currentAnchor = math.Mod(currentAnchor-(totalTorque/validHits)+1.0, 1.0) // Gemini test, reverse the torque
-			if math.IsNaN(currentAnchor) {
-				return startAnchor, math.MaxFloat64
+			currentAnchor = KFloat(math.Mod(float64(currentAnchor-(totalTorque/validHits)+1.0), 1.0)) // Gemini test, reverse the torque
+			if math.IsNaN(float64(currentAnchor)) {
+				return startAnchor, math.MaxFloat32
 			}
 		}
 	}
 
 	// Final Pass: Calculate "Badness"
-	var totalAbsError float64
-	var hits float64
+	var totalAbsError KFloat
+	var hits KFloat
 	for i, p := range phases {
 		if i%1000 == 0 {
 			runtime.Gosched()
 		} //...and breathe
-		bestError := 1.0 // Initialize with max possible
+		bestError := KFloat(1.0) // Initialize with max possible
 		for _, spokeOffset := range spokes {
 			// Calculate where this specific spoke is on the clock
-			targetPos := math.Mod(currentAnchor+spokeOffset, 1.0)
+			targetPos := KFloat(math.Mod(float64(currentAnchor+spokeOffset), 1.0))
 
 			// We need SIGNED distance: how far and in which direction?
 			// Result should be between -0.5 and 0.5
@@ -148,7 +152,7 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 				diff += 1.0
 			}
 
-			if math.Abs(diff) < math.Abs(bestError) {
+			if math.Abs(float64(diff)) < math.Abs(float64(bestError)) {
 				bestError = diff
 			}
 		}
@@ -156,26 +160,26 @@ func refineAndScore(phases []float64, startAnchor float64, spokes []float64) (fl
 
 		if err < guffThreshold {
 			//totalSqError += (err * err)
-			totalAbsError += math.Abs(err * err)
+			totalAbsError += KFloat(math.Abs(float64(err * err)))
 			hits++
 		}
 	}
 
 	// If it captures very few points, it's a "bad" fit regardless of tightness
 	if hits == 0 {
-		return startAnchor, math.MaxFloat64
+		return startAnchor, math.MaxFloat32
 	}
 
 	// Badness = Variance / CaptureRate
-	captureRate := hits / float64(len(phases))
+	captureRate := hits / KFloat(len(phases))
 	badness := (totalAbsError / hits) / (captureRate * captureRate)
 
 	return currentAnchor, badness
 }
 
-func findEpochPeaks(amounts []int64, k int, deterministic *rand.Rand) []float64 {
-	result := make([]float64, 0)
-	bestBadness := math.MaxFloat64
+func findEpochPeaks(amounts []int64, k int, deterministic *rand.Rand) []KFloat {
+	result := make([]KFloat, 0)
+	bestBadness := KFloat(math.MaxFloat32)
 	for try := 0; try < 4; try++ {
 		guess, badness := guessEpochPeaksClock(amounts, k, deterministic)
 		if badness < bestBadness {
@@ -186,12 +190,13 @@ func findEpochPeaks(amounts []int64, k int, deterministic *rand.Rand) []float64 
 	return result
 }
 
-func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (logCentroids []float64, badnessScore float64) {
+func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (logCentroids []KFloat, badnessScore KFloat) {
 	// 1. Map all mantissas to the 0.0 to 1.0 "Clock face"
-	phases := make([]float64, len(amounts))
+	phases := make([]KFloat, len(amounts))
 	for i, v := range amounts {
 		// log10(v) % 1 gives the position on the clock
-		_, phases[i] = math.Modf(math.Log10(float64(v)))
+		_, ph := math.Modf(math.Log10(float64(v)))
+		phases[i] = KFloat(ph)
 		if phases[i] < 0.0 {
 			phases[i] += 1.0
 		}
@@ -200,10 +205,10 @@ func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (log
 	logCentroids = initializeCentroids(phases, k, deterministic)
 
 	for i := 0; i < 8; i++ { // 10 iterations is usually enough for 1D
-		clusters := make([][]float64, k)
+		clusters := make([][]KFloat, k)
 
 		// 2. Assign to nearest centroid
-		badnessScore = float64(0)
+		badnessScore = KFloat(0)
 		for i, val := range phases {
 			if i%1000 == 0 {
 				runtime.Gosched()
@@ -227,7 +232,7 @@ func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (log
 				if len(clusters[j]) > 2 {
 					logCentroids[j] = circularMean(clusters[j])
 				} else {
-					logCentroids[j] = rand.Float64() // Give it a kick
+					logCentroids[j] = KFloat(rand.Float32()) // Give it a kick
 				}
 			}
 		}
@@ -236,16 +241,16 @@ func guessEpochPeaksClock(amounts []int64, k int, deterministic *rand.Rand) (log
 	return
 }
 
-func cyclicDistance(a, b float64) float64 {
-	diff := math.Abs(a - b)
+func cyclicDistance(a, b KFloat) KFloat {
+	diff := KFloat(math.Abs(float64(a - b)))
 	if diff > 0.5 {
 		return 1.0 - diff
 	}
 	return diff
 }
 
-func initializeCentroids(mantissas []float64, k int, deterministic *rand.Rand) []float64 {
-	result := make([]float64, k)
+func initializeCentroids(mantissas []KFloat, k int, deterministic *rand.Rand) []KFloat {
+	result := make([]KFloat, k)
 	count := len(mantissas)
 	for i := 0; i < k; i++ {
 		var r int
@@ -260,7 +265,7 @@ func initializeCentroids(mantissas []float64, k int, deterministic *rand.Rand) [
 	return result
 }
 
-func circularMean(phases []float64) float64 {
+func circularMean(phases []KFloat) KFloat {
 	if len(phases) == 0 {
 		return 0
 	}
@@ -271,7 +276,7 @@ func circularMean(phases []float64) float64 {
 			runtime.Gosched()
 		} //...and breathe
 		// 1. Convert phase (0..1) to radians (0..2π)
-		angle := p * 2.0 * math.Pi
+		angle := float64(p * 2.0 * math.Pi)
 
 		// 2. Sum the Cartesian coordinates
 		sumSin += math.Sin(angle)
@@ -293,7 +298,7 @@ func circularMean(phases []float64) float64 {
 	if avgPhase < 0 {
 		avgPhase += 1.0
 	}
-	return avgPhase
+	return KFloat(avgPhase)
 }
 
 func ExpPeakResidual(amount int64, logCentroids []float64) (exp int, peak int, harmonic int, residual int64) {
@@ -301,7 +306,8 @@ func ExpPeakResidual(amount int64, logCentroids []float64) (exp int, peak int, h
 	harmonic = 0
 
 	// log10(v) % 1 gives the position on the clock
-	e, logCentroid := math.Modf(math.Log10(float64(amount)))
+	e, lc := math.Modf(math.Log10(float64(amount)))
+	logCentroid := KFloat(lc)
 	if logCentroid < 0.0 {
 		logCentroid += 1.0
 		e -= 1.0
@@ -309,9 +315,9 @@ func ExpPeakResidual(amount int64, logCentroids []float64) (exp int, peak int, h
 	exp = int(e)
 
 	bestPeak := 0
-	bestDiff := cyclicDistance(logCentroid, logCentroids[bestPeak])
+	bestDiff := cyclicDistance(logCentroid, KFloat(logCentroids[bestPeak]))
 	for p := 1; p < len(logCentroids); p++ {
-		diff := cyclicDistance(logCentroid, logCentroids[p])
+		diff := cyclicDistance(logCentroid, KFloat(logCentroids[p]))
 		if diff < bestDiff {
 			bestDiff = diff
 			bestPeak = p
@@ -319,7 +325,7 @@ func ExpPeakResidual(amount int64, logCentroids []float64) (exp int, peak int, h
 	}
 	peak = bestPeak
 
-	peakAmount := int64(math.Round(math.Pow(10, logCentroids[bestPeak]+float64(exp))))
+	peakAmount := int64(math.Round(math.Pow(10, float64(logCentroids[bestPeak])+float64(exp))))
 
 	residual = amount - peakAmount
 

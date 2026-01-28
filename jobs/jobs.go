@@ -135,15 +135,13 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("The last block height is: %d\n", latestBlock.Height())
 
 	blocks := latestBlock.Height() + 1
 
-	p := message.NewPrinter(language.English) // For commas between thousands
-	p.Printf("There are: ??? in the first %d blocks\n", blocks)
-
 	elapsed = time.Since(startTime)
-	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Creating the celebrity histograms per epoch **==")
+	sJob := "Creating the celebrity histograms per epoch (PARALLEL)"
+	tJob := time.Now()
+	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), sJob)
 
 	//const blocksPerEpoch = 144 * 7 // Roughly a week
 	//const blocksPerMicroEpoch = 6  // Roughly an hour
@@ -157,7 +155,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 		numWorkers -= 4 // Save some for OS
 	}
 	//numWorkers = 1 // Serial test! I may be some time
-	fmt.Printf("NUMWORKERS:%d", numWorkers)
+	fmt.Printf("\tNUMWORKERS:%d\n", numWorkers)
 
 	// Here we use the "worker pool" ("feed the  beast") pattern
 	// 1. Create a channel to hold the epochIDs
@@ -195,24 +193,11 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 					endBlock = blocks
 				}
 
-				// New code
 				blockHandle, err := handles.BlockHandleByHeight(startBlock)
 				if err != nil {
 					return err
 				}
 				for b := startBlock; b < endBlock; b++ {
-					/* Old code
-					txoStart := blockToTxo[b]
-					txoEnd := numTxos // Rare fallback
-					if b+1 < blocks {
-						txoEnd = blockToTxo[b+1] // Common case
-					}
-
-					for m := txoStart; m < txoEnd; m++ {
-						localMap[amounts[m]]++
-					}*/
-
-					// New transaction-aware code
 					block, err := chain.BlockInterface(blockHandle)
 					if err != nil {
 						return err
@@ -267,7 +252,9 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 	if err := g.Wait(); err != nil {
 		return err
 	}
-	// END Stuff suggested by Gemini
+
+	jobElapsed := time.Since(tJob)
+	fmt.Printf("\t%s: Job Took: [%5.1f min]\n", sJob, jobElapsed.Minutes())
 
 	elapsed = time.Since(startTime)
 	fmt.Printf("[%5.1f min] %s\n", elapsed.Minutes(), "==** Huffman per Epoch (now parallel) **==")
@@ -454,7 +441,7 @@ func GatherStatistics(folder string, deterministic *rand.Rand) error {
 
 			result, microEpochToPeakStrengths, exclude = compress.ParallelSimulateCompressionWithKMeans(chain, handles, blocksPerEpoch, blocksPerMicroEpoch, blocks, epochToCelebCodes, expCodes, residualCodesByExp, magnitudeCodes, combinedCodes, microEpochToPhasePeaks)
 
-			p = message.NewPrinter(language.English) // For commas between thousands
+			p := message.NewPrinter(language.English) // For commas between thousands
 			p.Printf("TotalBits: %d\n", result.TotalBits)
 			p.Printf("BTC Celebrity hits: %d\n", result.CelebrityHits)
 			p.Printf("Fiat Ghost hits: %d\n", result.KMeansHits)
