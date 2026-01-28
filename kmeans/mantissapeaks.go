@@ -497,9 +497,12 @@ func ParallelKMeans(chain chainreadinterface.IBlockChain, handles chainreadinter
 								} else {
 									// Second pass
 									// Is it excluded? (recognized as high entropy change?)
-									exclude := transToExcludedOutput[transIndex]
-									if exclude < 255 && int64(txo) != int64(exclude) {
-										// Full pelt potentially different thinning
+									excludeCode := transToExcludedOutput[transIndex]
+									// 255 is a special code meaning "do not exclude any of the outputs"
+									// 0 to 254 are codes meaning "exclude this output, one of output index 0 to 254"
+									if excludeCode == 255 || int64(excludeCode) != int64(txo) {
+										// Do not exclude txo. So use it.
+										// But maybe do some thinning
 										if oldCodeTxoIndex-firstTxoOfMe < 1000 || oldCodeTxoIndex%20 == 0 {
 											buffer = append(buffer, amount)
 										}

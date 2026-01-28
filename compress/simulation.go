@@ -441,8 +441,6 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 				}
 				for t := int64(0); t < tCount; t++ {
 					outputsAndFeesAmounts := make([]int64, 0, 100)
-					fees := rand.Intn(1000) + 1000 // Just a simulation for now... ToDo
-					outputsAndFeesAmounts = append(outputsAndFeesAmounts, int64(fees))
 
 					transHandle, err := block.NthTransaction(t)
 					if err != nil {
@@ -465,6 +463,11 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 						amount := sats
 						outputsAndFeesAmounts = append(outputsAndFeesAmounts, amount)
 					}
+					// There is an extra amount we have to encode... fees.
+					// This is because fees are needed to infer the output that gets the two bit "the rest" code.
+					// For a transaction with n outputs, the encoded fees are added after the n outpus' codes
+					fees := rand.Intn(1000) + 1000 // Just a simulation for now... ToDo
+					outputsAndFeesAmounts = append(outputsAndFeesAmounts, int64(fees))
 
 					// We have all the outputs and the fees for the transaction
 					// Work out the bit cost for every one of these (BEFORE we choose which is most bit-expensive)
@@ -502,8 +505,6 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 						if amount > 0 && microEpochToPhasePeaks[microEpochID] != nil && len(microEpochToPhasePeaks[microEpochID]) > 0 {
 							e, peakIdx, harmonic, r := kmeans.ExpPeakResidual(amount, microEpochToPhasePeaks[microEpochID])
 							if rCode, ok := residualCodesByExp[e][r]; ok {
-								//ghostCost = 3                           // Firstly there is a 3 bit cost to select which of the 7 stored peaks (for this epoch) we're near
-								//ghostCost += 2                          // And some bits to store the harmonic
 								// Now we have a huffman code for the combination of peak index and harmonic index.
 								// This is the initial cost...
 								combinedCode := combinedCodes[int64(3*peakIdx+harmonic)]
@@ -568,7 +569,7 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 						outputsAndFeesEncodingChoice[c] = choice
 						outputsAndFeesQuotes[c] = chosenQuote
 					}
-					// Find the most costly output (or fees) in terms of bitcount
+					// Find the most costly output (or fees) of this transaction in terms of bitcount
 					mostExpensive := int(0)
 					loser := -1
 					for c, code := range outputsAndFeesCodes {
@@ -603,11 +604,21 @@ func ParallelSimulateCompressionWithKMeans(chain chainreadinterface.IBlockChain,
 						if outputsAndFeesEncodingChoice[c] == restSelector {
 							local.stats.RestHits++
 							local.stats.RestBits += uint64(code.Length)
-							if c > 0 && c-1 < 255 {
-								// Not fees. Make a note to exclude from next kmeans run
-								transToExcludedOutput[transIndex] = byte(c - 1)
-							}
 							podiumForRest.Submit(code, outputsAndFeesQuotes[c])
+							// For this transaction (using the transaction's height as an index), we
+							// make a note of which transaction output (c) is to be excluded from the next
+							// round of ghost k-means peak estimation. We have room to store this as a byte.
+							// For a transaction with n outputs, if we specify a greater number (ie we store >=n),
+							// this means DO NOT EXCLUDE ANY OUTPUT. Also, regardless of n, 255 is a special value
+							// that also means "do not exclude any output"
+							if c < 255 {
+								// make a note to exclude output c from next k-means ghost peak estimation phase
+								transToExcludedOutput[transIndex] = byte(c)
+							} else {
+								// Not enough room in the byte to encode c.
+								// We are forced to use the special code 255 which always means "do not exclude any"
+								transToExcludedOutput[transIndex] = 255
+							}
 						}
 					}
 					mutex.Unlock()
